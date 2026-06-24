@@ -74,6 +74,8 @@ Agents for this project live in `.claude/agents/`. Each agent reads this CLAUDE.
 **Add agents as needed. Run the init script to regenerate this table.**
 <!-- CLAUDE_AGENTS_END -->
 
+**Every agent carries a `## ✅ Non-Negotiables` block** — its Must Do / Must Never / Definition of Done. These are the hard rules the agent applies on every task, regardless of what it is asked, and they are tuned to the tools that agent actually has. Skim an agent's file to see the bar it holds itself to.
+
 ---
 
 ## 📁 Project Structure

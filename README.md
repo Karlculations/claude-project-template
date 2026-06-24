@@ -123,6 +123,7 @@ Agents live in `.claude/agents/` as markdown files with YAML frontmatter. The in
 - Has a `description` field Claude uses to decide when to auto-invoke it
 - Reads `CLAUDE.md` and the knowledge base on initialization before doing any work
 - Has role-specific behavioral standards, output expectations, and update responsibilities
+- Carries a **`## ✅ Non-Negotiables` block** — Must Do / Must Never / Definition of Done — the hard rules it applies on every task, tuned to the tools it actually has
 
 Claude Code delegates to agents automatically based on task context, or you can invoke them explicitly:
 
@@ -210,6 +211,13 @@ tools: read, write, edit, bash
 
 ## Role
 What this agent is responsible for and how it thinks.
+
+## ✅ Non-Negotiables
+The hard rules this agent applies on every task. Keep them honest to the agent's tools — don't promise a check the agent can't run (a read-only reviewer can't "run tests"; a writer with no shell can't "execute examples").
+
+**Must Do** — the handful of things this role always does (read before changing, show evidence before claiming done, stay in its lane).
+**Must Never** — the lines it must not cross (no skipped failing tests, no committed secrets, no irreversible change without a rollback).
+**Definition of Done** — the checklist that must be true before the agent hands work back.
 
 ## Standards
 Specific behavioral rules, checklists, and output expectations for this role.
