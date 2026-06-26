@@ -3,6 +3,7 @@
 # Usage:
 #   bash init-claude-project.sh              — full project init or smart upgrade
 #   bash init-claude-project.sh --upgrade    — re-run merge on existing CLAUDE.md only
+#   bash init-claude-project.sh --sync       — refresh agent bodies + commands + CLAUDE.md from the template
 #   bash init-claude-project.sh --update-readme  — rebuild README agents table
 
 set -e
@@ -233,6 +234,53 @@ merge_claude_md() {
   fi
 }
 
+# ─── Collect Installed Agents ─────────────────────────────────────────────────
+# Populate the global INSTALLED_AGENTS array from the target project's
+# .claude/agents/ directory. Used by both --upgrade and --sync so they operate
+# on exactly the agents this project selected at init time.
+collect_installed_agents() {
+  INSTALLED_AGENTS=()
+  if [[ -d "$TARGET_DIR/.claude/agents" ]]; then
+    for f in "$TARGET_DIR/.claude/agents"/*.md; do
+      [[ -f "$f" ]] && INSTALLED_AGENTS+=("$(basename "$f")")
+    done
+  fi
+}
+
+# ─── Sync Agent Bodies ────────────────────────────────────────────────────────
+# Refresh the file *contents* of agents the project already has from the
+# template. Iterates over INSTALLED_AGENTS (the project's selection), so it
+# never adds an agent the project deliberately left out. A project-local agent
+# with no template source is reported and left as-is.
+sync_agent_bodies() {
+  local count=0
+  for agent in "${INSTALLED_AGENTS[@]}"; do
+    if [[ -f "$TEMPLATE_DIR/.claude/agents/$agent" ]]; then
+      cp "$TEMPLATE_DIR/.claude/agents/$agent" "$TARGET_DIR/.claude/agents/$agent"
+      echo "    ✓ Synced agent: ${agent%.md}"
+      count=$((count + 1))
+    else
+      echo "    ⚠ ${agent%.md} has no template source — left as-is (project-local agent)"
+    fi
+  done
+  echo "    → $count agent file(s) refreshed from template"
+}
+
+# ─── Sync Commands ────────────────────────────────────────────────────────────
+# Refresh every template-owned command into the project. Commands are universal
+# infrastructure (not opt-in like agents), so all of them are kept current.
+sync_commands() {
+  mkdir -p "$TARGET_DIR/.claude/commands"
+  local count=0
+  for cmd in "$TEMPLATE_DIR/.claude/commands"/*.md; do
+    [[ -f "$cmd" ]] || continue
+    cp "$cmd" "$TARGET_DIR/.claude/commands/$(basename "$cmd")"
+    echo "    ✓ Synced command: /$(basename "${cmd%.md}")"
+    count=$((count + 1))
+  done
+  echo "    → $count command file(s) refreshed from template"
+}
+
 # ─── README Update Mode ───────────────────────────────────────────────────────
 
 update_readme_agents_table() {
@@ -281,13 +329,7 @@ if [[ "$1" == "--upgrade" ]]; then
   echo "Target: $TARGET_DIR"
   echo ""
 
-  # Collect currently installed agents
-  INSTALLED_AGENTS=()
-  if [[ -d "$TARGET_DIR/.claude/agents" ]]; then
-    for f in "$TARGET_DIR/.claude/agents"/*.md; do
-      [[ -f "$f" ]] && INSTALLED_AGENTS+=("$(basename "$f")")
-    done
-  fi
+  collect_installed_agents
 
   if [[ ${#INSTALLED_AGENTS[@]} -eq 0 ]]; then
     echo "  ⚠ No agents found in .claude/agents/ — run full init first"
@@ -302,6 +344,43 @@ if [[ "$1" == "--upgrade" ]]; then
   merge_claude_md "${INSTALLED_AGENTS[@]}"
   echo ""
   echo "✓ Upgrade complete."
+  echo "  ℹ  To also pull in updated agent definitions and commands, run: bash init-claude-project.sh --sync"
+  exit 0
+fi
+
+# ─── Sync Mode ────────────────────────────────────────────────────────────────
+# Everything --upgrade does (refresh CLAUDE.md's anchored sections), PLUS refresh
+# the agent file bodies and commands from the template. Never touches the
+# knowledge base or your custom CLAUDE.md content.
+
+if [[ "$1" == "--sync" ]]; then
+  echo ""
+  echo "╔══════════════════════════════════════════╗"
+  echo "║        Claude Project — Sync Mode        ║"
+  echo "╚══════════════════════════════════════════╝"
+  echo ""
+  echo "Target: $TARGET_DIR"
+  echo ""
+
+  collect_installed_agents
+
+  if [[ ${#INSTALLED_AGENTS[@]} -eq 0 ]]; then
+    echo "  ⚠ No agents found in .claude/agents/ — run full init first"
+    exit 1
+  fi
+
+  echo "  Syncing agent definitions..."
+  sync_agent_bodies
+  echo ""
+  echo "  Syncing commands..."
+  sync_commands
+  echo ""
+  echo "  Updating CLAUDE.md anchored sections..."
+  PROJECT_NAME="" PROJECT_TYPE="" PROJECT_STACK=""
+  merge_claude_md "${INSTALLED_AGENTS[@]}"
+  echo ""
+  echo "✓ Sync complete — agent bodies, commands, and CLAUDE.md are current."
+  echo "  Your knowledge base and custom CLAUDE.md content were left untouched."
   exit 0
 fi
 
@@ -414,5 +493,6 @@ done
 echo ""
 echo "Useful commands:"
 echo "  bash init-claude-project.sh --upgrade        — re-merge CLAUDE.md after adding agents"
+echo "  bash init-claude-project.sh --sync           — pull updated agent bodies + commands + CLAUDE.md from the template"
 echo "  bash init-claude-project.sh --update-readme  — rebuild README agents table"
 echo ""

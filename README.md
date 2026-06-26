@@ -100,6 +100,14 @@ bash init-claude-project.sh --upgrade
 
 This is useful after adding new agents — it updates the agent roster in `CLAUDE.md` without touching anything else.
 
+**Pulling template updates into an existing project:** `--upgrade` only refreshes `CLAUDE.md`'s anchored sections. It does **not** re-copy agent file *bodies* or commands — so improvements you make to an agent's instructions in the template won't reach a project that way. Use `--sync` for that:
+
+```bash
+bash init-claude-project.sh --sync
+```
+
+`--sync` does everything `--upgrade` does, and additionally refreshes the bodies of the agents the project already has, plus its commands, from the template. It iterates over the project's own agent selection, so it never adds agents the project deliberately left out, and it leaves a project-local agent (one with no template source) untouched. The knowledge base and your custom `CLAUDE.md` content are never modified.
+
 ---
 
 ### The Knowledge Base — Persistent Memory
@@ -186,7 +194,8 @@ Claude doesn't write to files unprompted. `/end-session` is a slash command that
 | Command | What it does |
 |---|---|
 | `bash init-claude-project.sh` | Full init or smart upgrade on the current directory |
-| `bash init-claude-project.sh --upgrade` | Re-run the CLAUDE.md merge (useful after adding agents) |
+| `bash init-claude-project.sh --upgrade` | Re-run the CLAUDE.md merge only (useful after adding agents) |
+| `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + commands + CLAUDE.md (knowledge base untouched) |
 | `bash init-claude-project.sh --update-readme` | Rebuild the agents table in README.md from the registry |
 
 ---
