@@ -3,7 +3,7 @@
 # Usage:
 #   bash init-claude-project.sh              — full project init or smart upgrade
 #   bash init-claude-project.sh --upgrade    — re-run merge on existing CLAUDE.md only
-#   bash init-claude-project.sh --sync       — refresh agent bodies + commands + CLAUDE.md from the template
+#   bash init-claude-project.sh --sync       — refresh agent bodies + commands + CLAUDE.md, seed changelogs
 #   bash init-claude-project.sh --update-readme  — rebuild README agents table
 
 set -e
@@ -281,6 +281,147 @@ sync_commands() {
   echo "    → $count command file(s) refreshed from template"
 }
 
+# ─── Changelog Seeding ────────────────────────────────────────────────────────
+# Deterministic layer for public-facing changelogs. Seeds an empty Keep a
+# Changelog scaffold at the repo root and in every detected sub-project, and
+# NEVER rewrites existing content — the reasoning layer (/end-session) owns
+# entries. See docs/superpowers/specs/2026-06-29-changelog-design.md.
+
+# Emit a Keep a Changelog scaffold. Empty scope => root changelog; a non-empty
+# scope label produces a scoped header (e.g. "# Changelog — web").
+changelog_scaffold() {
+  local scope="$1"
+  if [[ -z "$scope" ]]; then
+    printf '%s\n' \
+      "# Changelog" \
+      "" \
+      "All notable changes to this project are documented in this file." \
+      "The format is based on [Keep a Changelog](https://keepachangelog.com/)," \
+      "and this project adheres to [Semantic Versioning](https://semver.org/)." \
+      "" \
+      "## [Unreleased]"
+  else
+    printf '%s\n' \
+      "# Changelog — $scope" \
+      "" \
+      "Changes to the \`$scope\` part of this project." \
+      "The format is based on [Keep a Changelog](https://keepachangelog.com/)," \
+      "and this project adheres to [Semantic Versioning](https://semver.org/)." \
+      "" \
+      "## [Unreleased]"
+  fi
+}
+
+# Echo a newline-separated, deduped list of sub-project directories (relative to
+# target). A directory is a sub-project if it directly contains a marker file.
+# Mirrors build_existing_files_block()'s maxdepth + exclusion philosophy.
+# Searches from inside $target (relative paths) so an ancestor directory named
+# build/dist/node_modules/etc. can never match the exclusion globs.
+detect_subprojects() {
+  local target="$1"
+  (
+    cd "$target" 2>/dev/null || exit 0
+    local m
+    for m in package.json Cargo.toml go.mod pyproject.toml composer.json pom.xml build.gradle Gemfile "*.csproj"; do
+      find . -maxdepth 3 -type f -name "$m" \
+        ! -path "*/.claude/*" ! -path "*/node_modules/*" \
+        ! -path "*/vendor/*" ! -path "*/.git/*" \
+        ! -path "*/dist/*" ! -path "*/build/*" 2>/dev/null
+    done
+    find . -maxdepth 3 -type f -path "*/supabase/config.toml" \
+      ! -path "*/.claude/*" ! -path "*/node_modules/*" \
+      ! -path "*/vendor/*" ! -path "*/.git/*" \
+      ! -path "*/dist/*" ! -path "*/build/*" 2>/dev/null
+  ) | while IFS= read -r marker; do
+    dir="$(dirname "${marker#./}")"
+    if [[ -n "$dir" && "$dir" != "." ]]; then printf '%s\n' "$dir"; fi
+  done | sort -u
+}
+
+# Return 0 if the file already has an Unreleased section heading, ignoring code
+# fences. Matches the same near-canonical variants insert_unreleased would create
+# (case-insensitive, optional brackets, optional leading space) so the seeder's
+# "already present?" check and its insert trigger can never disagree.
+has_unreleased() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ {
+      m = ($0 ~ /```/) ? "`" : "~"
+      if (!fence)         { fence = 1; fc = m }
+      else if (m == fc)   { fence = 0 }
+      next
+    }
+    fence { next }
+    tolower($0) ~ /^[[:space:]]*##[[:space:]]*\[?unreleased\]?/ { found = 1; exit }
+    END { exit !found }
+  ' "$1"
+}
+
+# Insert an empty "## [Unreleased]" above the first real "## " heading (skipping
+# any inside a code fence). If there is no such heading, place it just after the
+# leading title/intro block (first blank line) rather than at EOF. Existing lines
+# are printed verbatim — never rewritten.
+insert_unreleased() {
+  local file="$1"
+  awk '
+    { line[NR] = $0 }
+    /^[[:space:]]*(```|~~~)/ {
+      m = ($0 ~ /```/) ? "`" : "~"
+      if (!fence)         { fence = 1; fc = m }
+      else if (m == fc)   { fence = 0 }
+      next
+    }
+    fence { next }
+    !h2  && /^## /            { h2 = NR }
+    !blk && /^[[:space:]]*$/  { blk = NR }
+    END {
+      ip = h2 ? h2 : (blk ? blk + 1 : NR + 1)
+      for (i = 1; i <= NR; i++) {
+        if (i == ip) { print "## [Unreleased]"; print "" }
+        print line[i]
+      }
+      if (ip == NR + 1) { print ""; print "## [Unreleased]" }
+    }
+  ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+# Seed root + each detected sub-project with a changelog. Create when missing;
+# otherwise preserve completely, adding only a missing [Unreleased] section.
+seed_changelogs() {
+  local target="$1"
+  local created=0 inserted=0 intact=0
+  local scopes=( "" )
+
+  local sp
+  while IFS= read -r sp; do
+    if [[ -n "$sp" ]]; then scopes+=( "$sp" ); fi
+  done < <(detect_subprojects "$target")
+
+  local scope dir file label
+  for scope in "${scopes[@]}"; do
+    if [[ -z "$scope" ]]; then
+      dir="$target"; label="root"
+    else
+      dir="$target/$scope"; label="$scope"
+    fi
+    file="$dir/CHANGELOG.md"
+
+    if [[ ! -f "$file" ]]; then
+      changelog_scaffold "$scope" > "$file.tmp" && mv "$file.tmp" "$file"
+      echo "    ✓ created CHANGELOG.md ($label)"
+      created=$((created + 1))
+    elif has_unreleased "$file"; then
+      echo "    ↷ CHANGELOG.md exists ($label) — left intact"
+      intact=$((intact + 1))
+    else
+      insert_unreleased "$file"
+      echo "    + added [Unreleased] section ($label)"
+      inserted=$((inserted + 1))
+    fi
+  done
+
+  echo "    → changelogs: $created created, $inserted updated, $intact left intact"
+}
+
 # ─── README Update Mode ───────────────────────────────────────────────────────
 
 update_readme_agents_table() {
@@ -379,8 +520,11 @@ if [[ "$1" == "--sync" ]]; then
   PROJECT_NAME="" PROJECT_TYPE="" PROJECT_STACK=""
   merge_claude_md "${INSTALLED_AGENTS[@]}"
   echo ""
-  echo "✓ Sync complete — agent bodies, commands, and CLAUDE.md are current."
-  echo "  Your knowledge base and custom CLAUDE.md content were left untouched."
+  echo "  Seeding changelogs (root + sub-projects)..."
+  seed_changelogs "$TARGET_DIR"
+  echo ""
+  echo "✓ Sync complete — agent bodies, commands, CLAUDE.md, and changelogs are current."
+  echo "  Knowledge base and custom CLAUDE.md content untouched; existing changelog entries were preserved (an [Unreleased] section was added only where missing)."
   exit 0
 fi
 
@@ -456,6 +600,12 @@ for file in components.md mistakes.md patterns.md session-log.md; do
   fi
 done
 
+# ─── Seed Changelogs ──────────────────────────────────────────────────────────
+
+echo ""
+echo "Seeding changelogs (root + sub-projects)..."
+seed_changelogs "$TARGET_DIR"
+
 # ─── Smart CLAUDE.md Merge ────────────────────────────────────────────────────
 
 echo ""
@@ -483,8 +633,8 @@ echo ""
 echo "Next steps:"
 echo "  1. Open CLAUDE.md and fill in Project Structure and Stack Notes"
 echo "  2. Start a Claude Code session — it reads CLAUDE.md automatically"
-echo "  3. Run /end-session before exiting each session"
-echo "  4. Commit .claude/ to version control"
+echo "  3. Run /end-session before exiting each session — it also drafts CHANGELOG.md entries"
+echo "  4. Commit .claude/, CLAUDE.md, and CHANGELOG.md to version control"
 echo ""
 echo "Agents installed (${#SELECTED_AGENTS[@]}):"
 for agent in "${SELECTED_AGENTS[@]}"; do
@@ -493,6 +643,6 @@ done
 echo ""
 echo "Useful commands:"
 echo "  bash init-claude-project.sh --upgrade        — re-merge CLAUDE.md after adding agents"
-echo "  bash init-claude-project.sh --sync           — pull updated agent bodies + commands + CLAUDE.md from the template"
+echo "  bash init-claude-project.sh --sync           — pull updated agent bodies + commands + CLAUDE.md, and seed changelogs"
 echo "  bash init-claude-project.sh --update-readme  — rebuild README agents table"
 echo ""

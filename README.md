@@ -53,6 +53,9 @@ After running the init script, your project gains:
 ```
 your-project/
 ├── CLAUDE.md                          ← Master context file, auto-read every session
+├── CHANGELOG.md                       ← Public-facing release notes (Keep a Changelog)
+├── web/                               ← A sub-project…
+│   └── CHANGELOG.md                   ← …gets its own scoped changelog
 └── .claude/
     ├── agents/                        ← Sub-agent definitions (install only what you need)
     │   ├── senior-dev.md
@@ -106,7 +109,7 @@ This is useful after adding new agents — it updates the agent roster in `CLAUD
 bash init-claude-project.sh --sync
 ```
 
-`--sync` does everything `--upgrade` does, and additionally refreshes the bodies of the agents the project already has, plus its commands, from the template. It iterates over the project's own agent selection, so it never adds agents the project deliberately left out, and it leaves a project-local agent (one with no template source) untouched. The knowledge base and your custom `CLAUDE.md` content are never modified.
+`--sync` does everything `--upgrade` does, and additionally refreshes the bodies of the agents the project already has, plus its commands, from the template. It iterates over the project's own agent selection, so it never adds agents the project deliberately left out, and it leaves a project-local agent (one with no template source) untouched. It also seeds changelogs (see below). The knowledge base and your custom `CLAUDE.md` content are never modified, and existing changelog content is never rewritten, reordered, or removed — the only change to an existing changelog is inserting a `## [Unreleased]` section if it has none.
 
 ---
 
@@ -184,8 +187,22 @@ Claude doesn't write to files unprompted. `/end-session` is a slash command that
 2. Log new errors, failed attempts, and gotchas to `mistakes.md`
 3. Record any new patterns or conventions established to `patterns.md`
 4. Append a structured summary to `session-log.md`
+5. Draft public-facing entries in the `CHANGELOG.md` of each changed scope, and run the deploy-gated release flow (see below)
 
 **This is the most important habit in the system.** Skip it and the knowledge base goes stale within a few sessions. Run it consistently and it becomes genuinely useful — Claude arrives at each new session knowing what exists, what failed, and where things stand.
+
+---
+
+### Changelogs — Public-Facing Release Notes
+
+Alongside the internal `session-log.md`, every project gets a **public, user-facing `CHANGELOG.md`** — release notes written for the people who *use* the software, not the next Claude session. The two are deliberately different voices for the same facts: `session-log.md` says *"refactored export to stream rows to avoid OOM"*; `CHANGELOG.md` says *"CSV export now handles large reports without timing out"*.
+
+It works in two layers, mirroring the rest of the template:
+
+- **Seeding (deterministic, in the script).** Full init and `--sync` auto-detect sub-projects by marker file (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `composer.json`, `*.csproj`, `pom.xml`, `build.gradle`, `Gemfile`, `supabase/config.toml`) and create a [Keep a Changelog](https://keepachangelog.com/) scaffold at the **root** and in **every sub-project** (e.g. `web/CHANGELOG.md`). This is **never-replace**: existing changelog content is preserved byte-for-byte — the only additive touch is inserting a `## [Unreleased]` section (above the first version entry, or just below the title if the file has no sections yet) when the file has none.
+- **Entries + releases (reasoning, in `/end-session`).** `/end-session` writes user-facing entries under `## [Unreleased]`, grouped `Added / Changed / Fixed / Removed / Deprecated / Security`. The **root** changelog aggregates every change in product language; each sub-project's changelog carries the technical detail.
+
+**Releases are deploy-gated and never automatic.** For each changed sub-project, `/end-session` asks whether you've deployed; only on a *yes* does it propose a SemVer bump (shown as `current → new`), wait for your explicit confirmation, then promote `## [Unreleased]` to a versioned, dated release and write the new version back into the manifest. When one sub-project ships independently, the root records it **scoped** (e.g. `## [web 1.3.0] - 2026-06-29`) while un-shipped changes stay under the shared `## [Unreleased]`. It never commits or tags — you do.
 
 ---
 
@@ -195,7 +212,7 @@ Claude doesn't write to files unprompted. `/end-session` is a slash command that
 |---|---|
 | `bash init-claude-project.sh` | Full init or smart upgrade on the current directory |
 | `bash init-claude-project.sh --upgrade` | Re-run the CLAUDE.md merge only (useful after adding agents) |
-| `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + commands + CLAUDE.md (knowledge base untouched) |
+| `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + commands + CLAUDE.md, and seed root + sub-project changelogs (knowledge base untouched; existing changelog content never rewritten) |
 | `bash init-claude-project.sh --update-readme` | Rebuild the agents table in README.md from the registry |
 
 ---
