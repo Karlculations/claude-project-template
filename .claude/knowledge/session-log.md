@@ -4,6 +4,34 @@
 
 ---
 
+## Session: 2026-07-21 (later) — Auto-resume layer: autopilot handoff, active-task marker, additive settings merge
+
+### Completed
+- **Autopilot handoff (usage guard)**: PreToolUse deny message now instructs — persist state, then (default-on unless user said wait / task blocked on their input) background-launch `nohup .claude/autopilot.sh "continue: <summary>" >> ~/.cache/claude-autonomy/autopilot.log` with `AUTOPILOT_CLAUDE_ARGS` mirroring the approved permission mode. Bash deliberately absent from the guard matcher so the handoff runs at trip time.
+- **Auto-resume marker**: `/end-session` Step 4 now maintains `.claude/knowledge/active-task.md` (write when unfinished + blocked-on-user flag; delete when complete). New `session-start-brief.sh` (SessionStart `startup|clear`) injects it into fresh sessions → first user message resumes the task. 4KB cap, jq-escaped, whitespace-only = silent, fail open.
+- **Review fixes**: autopilot exports `CLAUDE_AUTOPILOT=1` (child gets "continue directly" variant — without it the pgrep check made autopilot's own turn refuse its job); `AUTOPILOT_TASK_BLOCKED` sentinel (exit 1, one turn, instead of burning 24); end-session release questions skipped headless; context-guard message names the marker.
+- **Additive settings merge in `--sync`**: template hook entries appended per-event iff no existing entry references the same script basename; existing entries never modified; idempotent. Replaces "existing hooks key is sacred" (which silently orphaned new hooks in previously-synced projects). Opt-out = `CLAUDE_AUTONOMY=off`.
+- Tests 59 → **78 assertions**, all green. Docs synced (CLAUDE.md guards, README, components.md, patterns.md).
+
+### In Progress / Left Off At
+- Nothing in flight; no active-task.md needed. 12 files modified/added, ALL UNCOMMITTED on `main` — user to review + commit (offered twice, not yet answered).
+- CHANGELOG root `[Unreleased]` updated this session; release/versioning still the user's call.
+
+### Blockers
+- None technical. Commit decision is the user's.
+
+### Key Decisions Made
+- Handoff is default-ON at guard trip (user preference, stated twice); exceptions: user said wait, or task blocked on user input.
+- Interactive sessions cannot self-wake at reset — headless autopilot handoff is the mechanism; the brief makes any first message resume.
+- `--sync` merge policy change is deliberate and documented in patterns.md (2026-07-21 entry).
+
+### Watch Out For (Next Session)
+- `active-task.md` is injected into fresh-session context — keep it short; it's also a prompt-injection surface in cloned repos (accepted, same trust as CLAUDE.md).
+- Background workflows die on idle session gaps (MISTAKE-008); recover from journal.jsonl.
+- If headless autopilot runs stall: check `AUTOPILOT_CLAUDE_ARGS` permission mode and `~/.cache/claude-autonomy/autopilot.log`.
+
+---
+
 ## Session: 2026-07-21 — Autonomy layer: usage/context guards, autopilot, template distribution
 
 ### Completed

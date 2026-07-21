@@ -283,8 +283,9 @@ sync_commands() {
 
 # ─── Sync Autonomy Layer ──────────────────────────────────────────────────────
 # Hook scripts + autopilot are template-owned and overwritten like commands.
-# settings.json is merged conservatively: created if absent; if present, the
-# statusLine / hooks keys are added only when missing — never overwritten.
+# settings.json is merged additively: created if absent; statusLine added only
+# when missing; hook entries appended per-event only when no existing entry
+# references the same script basename — existing entries never modified.
 sync_autonomy() {
   mkdir -p "$TARGET_DIR/.claude/hooks"
   local f count=0
@@ -307,16 +308,30 @@ sync_autonomy() {
   elif ! jq -e . "$tgt" >/dev/null 2>&1; then
     echo "    ⚠ settings.json exists but is not valid JSON — fix it, then merge hooks/statusLine manually from $src"
   else
-    local had_hooks
-    had_hooks=$(jq 'has("hooks")' "$tgt")
+    # Additive, idempotent hooks merge: a template hook entry is appended only
+    # when no existing entry for that event already references the same script
+    # basename. Existing entries (user-modified or older-version) are NEVER
+    # touched, so template updates that add a new hook reach synced projects.
+    # Opt out of a guard with CLAUDE_AUTONOMY=off — deleting its entry means
+    # the next --sync re-adds it.
+    local before after
+    before=$(jq '[.hooks // {} | .[][]] | length' "$tgt")
     if jq -s '.[1] as $tpl | .[0]
-              | (if has("hooks")      then . else . + {hooks:      $tpl.hooks}      end)
-              | (if has("statusLine") then . else . + {statusLine: $tpl.statusLine} end)' \
+              | (if has("statusLine") then . else . + {statusLine: $tpl.statusLine} end)
+              | (.hooks // {}) as $th
+              | .hooks = (reduce ($tpl.hooks | to_entries[]) as $e ($th;
+                  ([ ($th[$e.key] // [])[] | .hooks[]?.command // empty | split("/") | last ]) as $have
+                  | .[$e.key] = (($th[$e.key] // [])
+                      + ($e.value | map(select(
+                          [ .hooks[]?.command // empty | split("/") | last ] | inside($have) | not
+                        ))))
+                ))' \
          "$tgt" "$src" > "$tgt.tmp" && mv "$tgt.tmp" "$tgt"; then
-      if [[ "$had_hooks" == "true" ]]; then
-        echo "    ⚠ settings.json already defines hooks — left untouched; wire the autonomy hooks manually (see $src)"
+      after=$(jq '[.hooks // {} | .[][]] | length' "$tgt")
+      if (( after > before )); then
+        echo "    ✓ settings.json merged — $(( after - before )) autonomy hook entr$( (( after - before == 1 )) && echo y || echo ies) added (existing hooks preserved)"
       else
-        echo "    ✓ settings.json merged (existing keys preserved)"
+        echo "    ✓ settings.json up to date (existing keys preserved)"
       fi
     else
       rm -f "$tgt.tmp"

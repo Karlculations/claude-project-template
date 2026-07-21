@@ -62,9 +62,10 @@ Run `/end-session` or manually do the following:
 
 ### Autonomy Guards (Hooks)
 This project runs guard hooks (`.claude/settings.json` + `.claude/hooks/`). When one speaks, comply immediately:
-- **Usage guard** (tool call denied citing plan usage, or a blocked prompt): stop starting new work, run the `/end-session` steps to persist state, then end the turn. Work resumes after the stated reset time — `.claude/autopilot.sh` does the waiting for unattended runs.
-- **Context guard** (your stop is blocked citing context %): run `/end-session` Steps 1–4 right then, before finishing the response.
+- **Usage guard** (tool call denied citing plan usage, or a blocked prompt): stop starting new work, run the `/end-session` steps to persist state (including `active-task.md`), then — unless the user asked you to wait or the task is blocked on their input — hand off before ending the turn: `mkdir -p ~/.cache/claude-autonomy && AUTOPILOT_CLAUDE_ARGS='<permission mode the user approved, e.g. --permission-mode acceptEdits>' nohup .claude/autopilot.sh "continue: <one-line task summary>" >> ~/.cache/claude-autonomy/autopilot.log 2>&1 &` — autopilot sleeps until the reset, then finishes headless (headless turns do NOT inherit the interactive permission mode, hence the env var).
+- **Context guard** (your stop is blocked citing context %): run `/end-session` Steps 1–4 right then — including the `active-task.md` marker if the task is unfinished — before finishing the response.
 - **Compaction notice** (session-start note that context was compacted): re-read `.claude/knowledge/` before doing anything else.
+- **Session-start brief** (new-session note citing an unfinished task from `active-task.md`): re-read `.claude/knowledge/`, then continue that task immediately — do not wait to be re-briefed. Exceptions: the marker says it is blocked on user input (ask for that input instead), or autopilot is already running it (`pgrep -f autopilot.sh` — report, don't duplicate; autopilot's own turns are exempt — they set `CLAUDE_AUTOPILOT=1` and get told to continue directly). Delete `active-task.md` once the task is verifiably complete.
 <!-- CLAUDE_PROTOCOLS_END -->
 
 ---

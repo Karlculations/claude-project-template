@@ -144,7 +144,7 @@ WHEN=${RESET:-unknown}
 
 if [[ "$EVENT" == "PreToolUse" ]]; then
   # Deny reason is shown to Claude — this is the mid-turn "wrap up now" signal.
-  jq -cn --arg reason "Plan usage is at ${PCT}% of the 5-hour window (threshold ${THRESH}%). Do NOT start new work or expensive tool calls. Persist state NOW: run the /end-session steps (update .claude/knowledge/ components.md, mistakes.md, patterns.md, session-log.md), then end the turn. Work resumes after the window resets at: ${WHEN}." \
+  jq -cn --arg reason "Plan usage is at ${PCT}% of the 5-hour window (threshold ${THRESH}%). Do NOT start new work or expensive tool calls. Persist state NOW: run the /end-session steps (update .claude/knowledge/ components.md, mistakes.md, patterns.md, session-log.md, active-task.md). Then, unless the user asked you to wait for them or the task is blocked on their input, hand off before ending the turn: mkdir -p ~/.cache/claude-autonomy && AUTOPILOT_CLAUDE_ARGS='<mirror the permission mode the user approved, e.g. --permission-mode acceptEdits>' nohup .claude/autopilot.sh \"continue: <one-line task summary>\" >> ~/.cache/claude-autonomy/autopilot.log 2>&1 & — autopilot sleeps until the reset, then finishes headless. Otherwise just end the turn; work resumes after the window resets at: ${WHEN}." \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
   exit 0
 fi

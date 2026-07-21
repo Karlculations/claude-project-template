@@ -51,6 +51,10 @@ Add a new entry at the top of `.claude/knowledge/session-log.md` using this form
 - [anything that tripped us up, or needs attention next time]
 ```
 
+**Also maintain `.claude/knowledge/active-task.md`** — the auto-resume marker a `SessionStart` hook injects into every fresh session:
+- **Task unfinished** (anything real under "In Progress / Left Off At" or "Blockers"): overwrite the file with — the task in one line, the exact next step, how to verify done, and whether it is blocked on user input (a blocked marker makes the next session ask instead of act).
+- **Task fully complete**: delete the file so fresh sessions start clean.
+
 ### Step 5: Update CHANGELOG(s)
 
 `session-log.md` (Step 4) is for the *next Claude session* — dev notes, blockers, "watch out for". The **`CHANGELOG.md`** is the opposite audience: **public, end-user-facing release notes**. Same facts, different voice.
@@ -71,6 +75,8 @@ Add a new entry at the top of `.claude/knowledge/session-log.md` using this form
 - **Skip internal-only churn** — refactors with no user-visible effect, knowledge-base updates, test-only changes. If nothing user-facing changed in a scope, write nothing for it.
 
 **5.4 — Release flow, asked per changed sub-project (and root, per 5.5).**
+
+> **Headless/unattended runs (autopilot, `claude -p`):** there is no user to answer — skip the questions below entirely and leave all entries under `## [Unreleased]`. Never invent a y/n answer or bump a version unattended.
 
 1. Ask: `<scope> — deployed, or deploying right after this? (y/n)`
 2. **If yes:**

@@ -47,11 +47,12 @@ Add `set -e` to a hook, or make a guard's error path block anything.
 
 **The Pattern**:
 - **Template-owned** → overwritten on sync: agent bodies (installed set only), commands (all), hooks, autopilot.
-- **User-owned** → merged or never touched: `settings.json` (keys added only when missing; an existing `hooks` key is sacred), changelogs (append `[Unreleased]` only), knowledge base (never touched by sync), custom CLAUDE.md content outside anchors.
+- **User-owned** → merged or never touched: `settings.json` (statusLine added only when missing; hook entries appended per-event ONLY when no existing entry references the same script basename — existing entries are never modified or removed, and the merge is idempotent), changelogs (append `[Unreleased]` only), knowledge base (never touched by sync), custom CLAUDE.md content outside anchors.
 - Shipped file stubs live in `templates/` (e.g. `templates/knowledge/`), never doubling as this repo's own live files.
+- Policy change 2026-07-21: the old "existing `hooks` key is sacred, warn and skip" rule silently orphaned new template hooks in previously-synced projects (script copied, never wired). Additive entry-level merge fixed that; the sanctioned opt-out for a guard is `CLAUDE_AUTONOMY=off`, since deleting its entry means the next `--sync` re-adds it.
 
 **Do NOT**:
-jq-deep-merge into a user's existing `hooks` key, or hardcode single-file copies in full init when a `sync_*` function exists.
+modify or remove existing entries in a user's `hooks` key (append-only, keyed by script basename), or hardcode single-file copies in full init when a `sync_*` function exists.
 
 ---
 

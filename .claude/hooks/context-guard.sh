@@ -41,6 +41,6 @@ PCT=${PCT%.*}
 
 (( PCT >= THRESH )) || exit 0
 touch "$MARKER" 2>/dev/null || true
-jq -cn --arg reason "Context window is ~${PCT}% full (threshold ${THRESH}%). Before stopping, persist this session's knowledge NOW: run /end-session Steps 1-4 (components.md, mistakes.md, patterns.md, session-log.md). Compaction can drop details at any moment — the knowledge base is what survives. Then finish your response." \
+jq -cn --arg reason "Context window is ~${PCT}% full (threshold ${THRESH}%). Before stopping, persist this session's knowledge NOW: run /end-session Steps 1-4 (components.md, mistakes.md, patterns.md, session-log.md, and the active-task.md marker if the task is unfinished). Compaction can drop details at any moment — the knowledge base is what survives. Then finish your response." \
   '{decision: "block", reason: $reason}'
 exit 0

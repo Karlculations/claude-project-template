@@ -33,7 +33,8 @@ STATE="$TMP/usage-state.json"
 
 echo "Test 1: script syntax"
 for s in "$HOOKS"/statusline.sh "$HOOKS"/usage-guard.sh "$HOOKS"/context-guard.sh \
-         "$HOOKS"/session-compact-brief.sh "$TEMPLATE_DIR/.claude/autopilot.sh" "$INIT"; do
+         "$HOOKS"/session-compact-brief.sh "$HOOKS"/session-start-brief.sh \
+         "$TEMPLATE_DIR/.claude/autopilot.sh" "$INIT"; do
   bash -n "$s" || fail "syntax error in $s"
 done
 ok "all scripts parse (bash -n)"
@@ -191,6 +192,52 @@ assert_contains "$TMP/cb.json" "knowledge" "points at the knowledge base"
 jq -e . "$TMP/cb.json" > /dev/null || fail "compaction brief output is not valid JSON"
 ok "output is valid JSON"
 
+# ─── 5b. Session-start brief (auto-resume marker) ────────────────────────────
+
+echo "Test 5b: session-start brief resumes an unfinished task"
+SSB="$TMP/ssbproj"; mkdir -p "$SSB/.claude/knowledge"
+printf 'Finish the CSV export — next: wire the row stream. Verify: tests/export.test.sh passes.\n' \
+  > "$SSB/.claude/knowledge/active-task.md"
+printf '{"hook_event_name":"SessionStart","source":"startup"}' \
+  | CLAUDE_PROJECT_DIR="$SSB" bash "$HOOKS/session-start-brief.sh" > "$TMP/ssb.json"
+assert_contains "$TMP/ssb.json" "additionalContext" "emits additionalContext JSON"
+assert_contains "$TMP/ssb.json" "CSV export" "marker content is injected"
+assert_contains "$TMP/ssb.json" "CONTINUE this task immediately" "instructs auto-resume"
+jq -e . "$TMP/ssb.json" > /dev/null || fail "session-start brief output is not valid JSON"
+ok "output is valid JSON"
+
+echo "Test 5c: session-start brief is silent with no active task"
+rm "$SSB/.claude/knowledge/active-task.md"
+rc=0
+printf '{"hook_event_name":"SessionStart","source":"startup"}' \
+  | CLAUDE_PROJECT_DIR="$SSB" bash "$HOOKS/session-start-brief.sh" > "$TMP/ssb2.json" || rc=$?
+[[ "$rc" == "0" && ! -s "$TMP/ssb2.json" ]] || fail "brief not silent without a marker (rc=$rc)"
+ok "no marker = no output, exit 0"
+
+echo "Test 5d: session-start brief JSON-escapes hostile marker content"
+printf 'Task with "quotes",\nnewlines, and a \\ backslash\n' > "$SSB/.claude/knowledge/active-task.md"
+printf '{"hook_event_name":"SessionStart","source":"clear"}' \
+  | CLAUDE_PROJECT_DIR="$SSB" bash "$HOOKS/session-start-brief.sh" > "$TMP/ssb3.json"
+jq -e . "$TMP/ssb3.json" > /dev/null || fail "quotes/newlines in marker broke the JSON"
+ok "special characters survive as valid JSON"
+
+echo "Test 5e: whitespace-only marker is treated as no task"
+printf '   \n\t\n' > "$SSB/.claude/knowledge/active-task.md"
+rc=0
+printf '{"hook_event_name":"SessionStart","source":"startup"}' \
+  | CLAUDE_PROJECT_DIR="$SSB" bash "$HOOKS/session-start-brief.sh" > "$TMP/ssb4.json" || rc=$?
+[[ "$rc" == "0" && ! -s "$TMP/ssb4.json" ]] || fail "whitespace-only marker emitted a brief (rc=$rc)"
+ok "whitespace-only marker = silent"
+
+echo "Test 5f: autopilot's own turns get the continue-directly variant"
+printf 'Finish the CSV export\n' > "$SSB/.claude/knowledge/active-task.md"
+printf '{"hook_event_name":"SessionStart","source":"startup"}' \
+  | CLAUDE_PROJECT_DIR="$SSB" CLAUDE_AUTOPILOT=1 bash "$HOOKS/session-start-brief.sh" > "$TMP/ssb5.json"
+assert_contains "$TMP/ssb5.json" "autopilot continuation run" "identifies the autopilot context"
+assert_not_contains "$TMP/ssb5.json" "pgrep" "no self-defeating pgrep check for autopilot's own turn"
+jq -e . "$TMP/ssb5.json" > /dev/null || fail "autopilot-variant output is not valid JSON"
+ok "autopilot variant is valid JSON"
+
 # ─── 6. Autopilot completion semantics ────────────────────────────────────────
 # A sandbox project with a fake `claude` on PATH and a fake usage-guard so the
 # usage gate always reads 0% and the loop runs immediately.
@@ -228,6 +275,33 @@ rc=0
 PATH="$FAKEBIN:$PATH" bash "$APILOT/autopilot.sh" "do the thing" 2 > "$TMP/ap2.out" 2>&1 || rc=$?
 assert_contains "$TMP/ap2.out" "task reported complete" "whole-line sentinel completes"
 [[ "$rc" == "0" ]] || fail "expected exit 0 on completion, got $rc"
+
+echo "Test 6b2: a whole-line BLOCKED sentinel stops the loop instead of burning turns"
+cat > "$FAKEBIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf 'Cannot proceed.\nAUTOPILOT_TASK_BLOCKED\nNeed the production DB password.\n'
+exit 0
+EOF
+chmod +x "$FAKEBIN/claude"
+rc=0
+PATH="$FAKEBIN:$PATH" bash "$APILOT/autopilot.sh" "do the thing" 5 > "$TMP/apb.out" 2>&1 || rc=$?
+assert_contains "$TMP/apb.out" "task blocked on user input" "blocked sentinel is reported"
+[[ "$rc" == "1" ]] || fail "expected exit 1 on blocked, got $rc"
+[[ "$(grep -c '── autopilot turn' "$TMP/apb.out")" == "1" ]] || fail "blocked task ran more than one turn"
+ok "blocked task stops after one turn with exit 1"
+
+echo "Test 6b3: autopilot exports CLAUDE_AUTOPILOT=1 to its claude turns"
+cat > "$FAKEBIN/claude" <<'EOF'
+#!/usr/bin/env bash
+[[ "${CLAUDE_AUTOPILOT:-}" == "1" ]] || { echo "ENV MISSING"; exit 0; }
+printf 'AUTOPILOT_TASK_COMPLETE\n'
+EOF
+chmod +x "$FAKEBIN/claude"
+rc=0
+PATH="$FAKEBIN:$PATH" bash "$APILOT/autopilot.sh" "do the thing" 2 > "$TMP/apenv.out" 2>&1 || rc=$?
+assert_not_contains "$TMP/apenv.out" "ENV MISSING" "CLAUDE_AUTOPILOT=1 reaches the child"
+[[ "$rc" == "0" ]] || fail "env test run did not complete cleanly (rc=$rc)"
+ok "hooks in headless turns can identify the autopilot context"
 ok "autopilot exits 0 on a real completion"
 
 echo "Test 6c: rc=127 aborts fast and names the real cause"
@@ -253,7 +327,7 @@ make_proj() {
 echo "Test 7: --sync installs the autonomy layer into a fresh project"
 P1=$(make_proj proj1)
 ( cd "$P1" && bash "$INIT" --sync ) > "$TMP/sync1.out" 2>&1 || { cat "$TMP/sync1.out"; fail "--sync exited non-zero"; }
-for h in statusline.sh usage-guard.sh context-guard.sh session-compact-brief.sh; do
+for h in statusline.sh usage-guard.sh context-guard.sh session-compact-brief.sh session-start-brief.sh; do
   assert_file "$P1/.claude/hooks/$h" "hook installed: $h"
   [[ -x "$P1/.claude/hooks/$h" ]] || fail "$h not executable"
 done
@@ -261,6 +335,7 @@ ok "hooks are executable"
 assert_file "$P1/.claude/autopilot.sh" "autopilot installed"
 assert_file "$P1/.claude/settings.json" "settings.json created"
 assert_contains "$P1/.claude/settings.json" "usage-guard.sh" "settings wires the usage guard"
+assert_contains "$P1/.claude/settings.json" "session-start-brief.sh" "settings wires the session-start brief"
 assert_contains "$P1/.claude/settings.json" "statusLine" "settings wires the statusline"
 assert_contains "$P1/.claude/settings.json" 'CLAUDE_PROJECT_DIR' "hook paths use \$CLAUDE_PROJECT_DIR"
 assert_contains "$P1/CLAUDE.md" "Autonomy Guards" "CLAUDE.md protocols include the guard contract"
@@ -275,14 +350,35 @@ assert_contains "$P2/.claude/settings.json" "usage-guard.sh" "hooks added alongs
 jq -e . "$P2/.claude/settings.json" > /dev/null || fail "merged settings.json is not valid JSON"
 ok "merged settings.json is valid JSON"
 
-echo "Test 7c: a project's own hooks key is never overwritten"
+echo "Test 7c: a project's own hooks are preserved, template entries added alongside"
 P3=$(make_proj proj3)
 mkdir -p "$P3/.claude"
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-own.sh"}]}]}}' > "$P3/.claude/settings.json"
-( cd "$P3" && bash "$INIT" --sync ) > "$TMP/sync3.out" 2>&1 || { cat "$TMP/sync3.out"; fail "--sync (hooks conflict) exited non-zero"; }
+( cd "$P3" && bash "$INIT" --sync ) > "$TMP/sync3.out" 2>&1 || { cat "$TMP/sync3.out"; fail "--sync (hooks merge) exited non-zero"; }
 assert_contains "$P3/.claude/settings.json" "my-own.sh" "user's own hook survives"
-assert_not_contains "$P3/.claude/settings.json" "usage-guard.sh" "template hooks not force-injected"
-assert_contains "$TMP/sync3.out" "manually" "conflict is reported to the user"
+assert_contains "$P3/.claude/settings.json" "usage-guard.sh" "missing template hooks added alongside"
+[[ "$(jq '.hooks.Stop | length' "$P3/.claude/settings.json")" == "2" ]] \
+  || fail "expected user's Stop hook + template context-guard to coexist"
+ok "user hook and template hook coexist on the same event"
+
+echo "Test 7c2: previously-synced project gains ONLY the new hook wiring (upgrade path)"
+P5=$(make_proj proj5)
+mkdir -p "$P5/.claude"
+# settings.json exactly as the PREVIOUS template version wrote it — no session-start-brief
+jq 'del(.hooks.SessionStart[] | select(.matcher == "startup|clear"))' \
+  "$TEMPLATE_DIR/.claude/settings.json" > "$P5/.claude/settings.json"
+( cd "$P5" && bash "$INIT" --sync ) > "$TMP/sync5.out" 2>&1 || { cat "$TMP/sync5.out"; fail "--sync (upgrade) exited non-zero"; }
+assert_contains "$P5/.claude/settings.json" "session-start-brief.sh" "new hook wiring added on upgrade"
+[[ "$(grep -c "usage-guard.sh" "$P5/.claude/settings.json")" == "2" ]] \
+  || fail "usage-guard entries duplicated on upgrade"
+ok "existing entries not duplicated"
+
+echo "Test 7c3: re-running --sync is idempotent"
+cp "$P5/.claude/settings.json" "$TMP/before-resync.json"
+( cd "$P5" && bash "$INIT" --sync ) > "$TMP/sync5b.out" 2>&1 || fail "second --sync exited non-zero"
+diff <(jq -S . "$TMP/before-resync.json") <(jq -S . "$P5/.claude/settings.json") > /dev/null \
+  || fail "second --sync changed settings.json"
+assert_contains "$TMP/sync5b.out" "up to date" "idempotent sync reports up to date"
 
 echo "Test 7d: malformed target settings.json warns and does not abort the run"
 P4=$(make_proj proj4)

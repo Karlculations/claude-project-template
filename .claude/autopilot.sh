@@ -19,6 +19,10 @@ MAX=${2:-24}
 THRESH="${CLAUDE_USAGE_THRESHOLD:-95}"
 [[ "$THRESH" =~ ^[0-9]+$ ]] || THRESH=95
 DONE_TOKEN="AUTOPILOT_TASK_COMPLETE"
+BLOCKED_TOKEN="AUTOPILOT_TASK_BLOCKED"
+# Hooks (session-start-brief.sh) use this to know a turn IS the autopilot run
+# — without it they would tell the child to defer to the running autopilot.
+export CLAUDE_AUTOPILOT=1
 
 command -v jq >/dev/null 2>&1 || { echo "✗ autopilot: jq is required (usage gating would be blind without it)" >&2; exit 1; }
 
@@ -50,9 +54,9 @@ for (( turn = 1; turn <= MAX; turn++ )); do
   if (( turn == 1 )); then
     out=$(claude -p ${AUTOPILOT_CLAUDE_ARGS:-} "$PROMPT
 
-Follow this project's CLAUDE.md protocols and keep .claude/knowledge/ current as you go. When the ENTIRE task is verifiably complete (tests written and passing), output the single line $DONE_TOKEN" 2>&1)
+Follow this project's CLAUDE.md protocols and keep .claude/knowledge/ current as you go. When the ENTIRE task is verifiably complete (tests written and passing), output the single line $DONE_TOKEN. If the task is blocked on user input, output the single line $BLOCKED_TOKEN with the reason on the next line" 2>&1)
   else
-    out=$(claude -p --continue ${AUTOPILOT_CLAUDE_ARGS:-} "Re-read .claude/knowledge/session-log.md and continue the task from where it left off. When the ENTIRE task is verifiably complete, output the single line $DONE_TOKEN" 2>&1)
+    out=$(claude -p --continue ${AUTOPILOT_CLAUDE_ARGS:-} "Re-read .claude/knowledge/session-log.md and continue the task from where it left off. When the ENTIRE task is verifiably complete, output the single line $DONE_TOKEN. If the task is blocked on user input, output the single line $BLOCKED_TOKEN with the reason on the next line" 2>&1)
   fi
   rc=$?
   printf '%s\n' "$out" | tail -n 20
@@ -62,6 +66,10 @@ Follow this project's CLAUDE.md protocols and keep .claude/knowledge/ current as
   if grep -qxF "$DONE_TOKEN" <<<"$out"; then
     echo "✓ task reported complete after $turn turn(s)"
     exit 0
+  fi
+  if grep -qxF "$BLOCKED_TOKEN" <<<"$out"; then
+    echo "⏹ task blocked on user input after $turn turn(s) — stopping (see .claude/knowledge/active-task.md)"
+    exit 1
   fi
   if (( rc == 127 )); then
     echo "✗ autopilot: claude not found on PATH — aborting" >&2

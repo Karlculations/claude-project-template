@@ -13,6 +13,38 @@ Before starting any work, scan this file for patterns matching your current task
 
 ---
 
+**ID**: MISTAKE-008
+**Severity**: 🟡
+**Date**: 2026-07-21
+**Context**: Background review workflow (3 reviewers + 4 verifiers) over the auto-resume changes
+
+**What went wrong**:
+The workflow died silently when the session went idle (~3h gap): 2 of 7 agents had reported, the rest were killed mid-run; TaskOutput no longer knew the task ID. A first poll loop then "completed" prematurely because its grep matched per-agent `"type":"result"` events, not run completion.
+
+**What actually worked**:
+Recovering the finished reviewers' findings straight from the workflow's `journal.jsonl`, verifying each finding by hand against the code, and fixing directly — instead of resuming 5 dead agents to re-derive what inspection could confirm.
+
+**Pattern to avoid**:
+Don't park long-running background workflows across an idle session boundary and assume they survive. Check journal `started` vs `result` counts before trusting any completion signal.
+
+---
+
+**ID**: MISTAKE-007
+**Severity**: 🟡
+**Date**: 2026-07-21
+**Context**: Designing session-start-brief.sh (auto-resume marker injection)
+
+**What went wrong**:
+The injected instruction told every fresh session "if `pgrep -f autopilot.sh` finds autopilot running, defer to it." But autopilot's own `claude -p` child fires the same SessionStart hook, sees its parent in the process table, and is told to refuse its own job — the handoff loop defeats itself by design. Caught by adversarial review, not by tests (tests validated JSON shape, not the instruction's semantics in each execution context).
+
+**What actually worked**:
+An explicit context signal: autopilot exports `CLAUDE_AUTOPILOT=1`; the hook emits a "you ARE the autopilot run — continue directly" variant. Locked in with tests asserting the variant text and the env reaching the child.
+
+**Pattern to avoid**:
+When a hook injects instructions, enumerate every context that fires the hook (interactive, `claude -p`, autopilot child, nested) and read the instruction from each one's point of view. An instruction correct in one context can be self-defeating in another.
+
+---
+
 **ID**: MISTAKE-006
 **Severity**: 🟢
 **Date**: 2026-07-21
