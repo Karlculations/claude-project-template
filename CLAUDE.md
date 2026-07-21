@@ -59,6 +59,12 @@ Run `/end-session` or manually do the following:
 2. Update `mistakes.md` with any new errors or patterns discovered
 3. Append a summary entry to `session-log.md`
 4. Update this file's "Last Updated" date if project structure changed
+
+### Autonomy Guards (Hooks)
+This project runs guard hooks (`.claude/settings.json` + `.claude/hooks/`). When one speaks, comply immediately:
+- **Usage guard** (tool call denied citing plan usage, or a blocked prompt): stop starting new work, run the `/end-session` steps to persist state, then end the turn. Work resumes after the stated reset time — `.claude/autopilot.sh` does the waiting for unattended runs.
+- **Context guard** (your stop is blocked citing context %): run `/end-session` Steps 1–4 right then, before finishing the response.
+- **Compaction notice** (session-start note that context was compacted): re-read `.claude/knowledge/` before doing anything else.
 <!-- CLAUDE_PROTOCOLS_END -->
 
 ---

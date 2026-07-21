@@ -63,6 +63,13 @@ your-project/
     │   └── ...
     ├── commands/
     │   └── end-session.md             ← Slash command: /end-session
+    ├── hooks/                         ← Autonomy layer (see below)
+    │   ├── statusline.sh              ← Usage sensor + status line display
+    │   ├── usage-guard.sh             ← Pauses work near the 5h usage limit
+    │   ├── context-guard.sh           ← Forces /end-session before context fills
+    │   └── session-compact-brief.sh   ← Re-orients the session after compaction
+    ├── autopilot.sh                   ← Unattended wait-for-reset-and-resume runner
+    ├── settings.json                  ← Wires the hooks + statusline (merged, never clobbered)
     └── knowledge/
         ├── components.md              ← Registry of every component and module
         ├── mistakes.md                ← Failed attempts, errors, anti-patterns
@@ -206,13 +213,28 @@ It works in two layers, mirroring the rest of the template:
 
 ---
 
+### The Autonomy Layer — Self-Aware Sessions
+
+Every initialized project also gets a set of guard hooks (`.claude/hooks/` + `.claude/settings.json`) that make sessions aware of their two hard resource limits — the **context window** and the **subscription usage window** — and react before either one truncates work. Requires `jq`; every guard **fails open** (a guard error can never lock you out).
+
+- **Sensor — `statusline.sh`.** Claude Code pipes official `rate_limits` data (5h/7d percentages + reset times) into the status line on every refresh. The script renders it (`Opus | 5h 42% → 15:00 | 7d 12%`) *and* caches it to a state file the guards read. Check anytime with `.claude/hooks/usage-guard.sh --status`.
+- **Usage guard — stop at ≥95%.** A `UserPromptSubmit` hook blocks new prompts once the 5-hour window passes the threshold (default 95%, `CLAUDE_USAGE_THRESHOLD`), telling you the reset time. A `PreToolUse` hook denies expensive tool calls (subagents, web) mid-turn with an instruction Claude *sees*: persist state via `/end-session`, then end the turn. Bypass once with `CLAUDE_AUTONOMY=off`.
+- **Context guard — `/end-session` before the window fills.** A `Stop` hook estimates context usage; past the threshold (default 80%, `CLAUDE_CONTEXT_THRESHOLD`) it blocks the stop once per session and instructs Claude to run the `/end-session` knowledge steps immediately — so the knowledge base is written *while the details still exist*, not after compaction ate them.
+- **Compaction brief.** A `SessionStart(compact)` hook fires after any compaction and injects a note to re-read `.claude/knowledge/` before continuing. Compaction stops being a memory wipe — the knowledge base is the memory.
+- **Autopilot — auto-resume after reset.** `.claude/autopilot.sh "task"` runs the task headless in turns: it checks the usage window before each turn, sleeps until the *known* reset time when the threshold is hit, then continues the same session (`claude -p --continue`), re-orienting from `session-log.md`. It never evades limits — it stops early and waits. Headless runs have no statusline, so it falls back to the same usage endpoint Claude Code itself queries.
+
+The result: a session that saves its own memory before running out of context, refuses to burn the last 5% of a usage window mid-task, and picks itself back up when the window resets.
+
+---
+
 ## Script Reference
 
 | Command | What it does |
 |---|---|
 | `bash init-claude-project.sh` | Full init or smart upgrade on the current directory |
 | `bash init-claude-project.sh --upgrade` | Re-run the CLAUDE.md merge only (useful after adding agents) |
-| `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + commands + CLAUDE.md, and seed root + sub-project changelogs (knowledge base untouched; existing changelog content never rewritten) |
+| `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + commands + autonomy hooks + CLAUDE.md, and seed root + sub-project changelogs (knowledge base untouched; existing changelog content never rewritten; settings.json merged, never clobbered) |
+| `.claude/autopilot.sh "task" [max_turns]` | Unattended runner: works in turns, pauses at the usage threshold, resumes after the window resets |
 | `bash init-claude-project.sh --update-readme` | Rebuild the agents table in README.md from the registry |
 
 ---

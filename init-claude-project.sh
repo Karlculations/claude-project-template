@@ -281,6 +281,50 @@ sync_commands() {
   echo "    → $count command file(s) refreshed from template"
 }
 
+# ─── Sync Autonomy Layer ──────────────────────────────────────────────────────
+# Hook scripts + autopilot are template-owned and overwritten like commands.
+# settings.json is merged conservatively: created if absent; if present, the
+# statusLine / hooks keys are added only when missing — never overwritten.
+sync_autonomy() {
+  mkdir -p "$TARGET_DIR/.claude/hooks"
+  local f count=0
+  for f in "$TEMPLATE_DIR/.claude/hooks"/*.sh; do
+    [[ -f "$f" ]] || continue
+    cp "$f" "$TARGET_DIR/.claude/hooks/$(basename "$f")"
+    chmod +x "$TARGET_DIR/.claude/hooks/$(basename "$f")"
+    count=$((count + 1))
+  done
+  cp "$TEMPLATE_DIR/.claude/autopilot.sh" "$TARGET_DIR/.claude/autopilot.sh"
+  chmod +x "$TARGET_DIR/.claude/autopilot.sh"
+  echo "    → $count hook script(s) + autopilot refreshed"
+
+  local tgt="$TARGET_DIR/.claude/settings.json" src="$TEMPLATE_DIR/.claude/settings.json"
+  if [[ ! -f "$tgt" ]]; then
+    cp "$src" "$tgt"
+    echo "    ✓ settings.json created (statusline + autonomy hooks)"
+  elif ! command -v jq >/dev/null 2>&1; then
+    echo "    ⚠ settings.json exists and jq is unavailable — merge hooks/statusLine manually from $src"
+  elif ! jq -e . "$tgt" >/dev/null 2>&1; then
+    echo "    ⚠ settings.json exists but is not valid JSON — fix it, then merge hooks/statusLine manually from $src"
+  else
+    local had_hooks
+    had_hooks=$(jq 'has("hooks")' "$tgt")
+    if jq -s '.[1] as $tpl | .[0]
+              | (if has("hooks")      then . else . + {hooks:      $tpl.hooks}      end)
+              | (if has("statusLine") then . else . + {statusLine: $tpl.statusLine} end)' \
+         "$tgt" "$src" > "$tgt.tmp" && mv "$tgt.tmp" "$tgt"; then
+      if [[ "$had_hooks" == "true" ]]; then
+        echo "    ⚠ settings.json already defines hooks — left untouched; wire the autonomy hooks manually (see $src)"
+      else
+        echo "    ✓ settings.json merged (existing keys preserved)"
+      fi
+    else
+      rm -f "$tgt.tmp"
+      echo "    ⚠ settings.json merge failed — file left unchanged; wire hooks manually from $src"
+    fi
+  fi
+}
+
 # ─── Changelog Seeding ────────────────────────────────────────────────────────
 # Deterministic layer for public-facing changelogs. Seeds an empty Keep a
 # Changelog scaffold at the repo root and in every detected sub-project, and
@@ -516,6 +560,9 @@ if [[ "$1" == "--sync" ]]; then
   echo "  Syncing commands..."
   sync_commands
   echo ""
+  echo "  Syncing autonomy layer (hooks + autopilot + settings)..."
+  sync_autonomy
+  echo ""
   echo "  Updating CLAUDE.md anchored sections..."
   PROJECT_NAME="" PROJECT_TYPE="" PROJECT_STACK=""
   merge_claude_md "${INSTALLED_AGENTS[@]}"
@@ -523,7 +570,7 @@ if [[ "$1" == "--sync" ]]; then
   echo "  Seeding changelogs (root + sub-projects)..."
   seed_changelogs "$TARGET_DIR"
   echo ""
-  echo "✓ Sync complete — agent bodies, commands, CLAUDE.md, and changelogs are current."
+  echo "✓ Sync complete — agent bodies, commands, autonomy layer, CLAUDE.md, and changelogs are current."
   echo "  Knowledge base and custom CLAUDE.md content untouched; existing changelog entries were preserved (an [Unreleased] section was added only where missing)."
   exit 0
 fi
@@ -583,8 +630,13 @@ done
 
 # ─── Copy Commands ────────────────────────────────────────────────────────────
 
-cp "$TEMPLATE_DIR/.claude/commands/end-session.md" "$TARGET_DIR/.claude/commands/end-session.md"
-echo "  ✓ Copied command: /end-session"
+sync_commands
+
+# ─── Autonomy Layer ───────────────────────────────────────────────────────────
+
+echo ""
+echo "Installing autonomy layer (statusline + guard hooks + autopilot)..."
+sync_autonomy
 
 # ─── Initialize Knowledge Base ────────────────────────────────────────────────
 
@@ -592,7 +644,7 @@ TODAY=$(date +"%Y-%m-%d")
 
 for file in components.md mistakes.md patterns.md session-log.md; do
   if [[ ! -f "$TARGET_DIR/.claude/knowledge/$file" ]]; then
-    cp "$TEMPLATE_DIR/.claude/knowledge/$file" "$TARGET_DIR/.claude/knowledge/$file"
+    cp "$TEMPLATE_DIR/templates/knowledge/$file" "$TARGET_DIR/.claude/knowledge/$file"
     sed -i "s/\[DATE\]/$TODAY/g" "$TARGET_DIR/.claude/knowledge/$file"
     echo "  ✓ Initialized knowledge/$file"
   else
