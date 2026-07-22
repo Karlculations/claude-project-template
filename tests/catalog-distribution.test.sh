@@ -84,12 +84,32 @@ assert_file "$CAP/skills/fixskill/SKILL.md" "skill body snapshotted into skills 
 assert_jq "$CAT" '.groups | length' "9" "default group scaffold seeded on first capture"
 assert_jq "$CAT" '.mcpServers[0].id' "fake-server" "user-scope MCP server captured"
 
-# ─── 2. (reserved for Task 2: refresh/merge semantics) ────────────────────────
+# ─── 2. Refresh semantics ─────────────────────────────────────────────────────
+
+echo "Test 2: re-capture preserves curation and keeps missing items"
+# Curate: assign alpha a group + description; plant a ghost item not on the
+# machine; hand-rename the redacted env reference.
+jq '.plugins |= map(if .id == "alpha@market-one"
+                    then .group = "core-quality" | .description = "Curated alpha"
+                    else . end)
+    | .plugins += [{id: "ghost@market-one", group: "core-quality", description: "Gone from machine"}]
+    | .mcpServers |= map(.config.env.API_KEY = "${MY_RENAMED_KEY}")
+    | .connectors = [{id: "Notion", note: "test connector note"}]' \
+  "$CAT" > "$CAT.tmp" && mv "$CAT.tmp" "$CAT"
+
+run_capture "$U" "$CAP" "$TMP/cap2.out" || fail "re-capture exited non-zero: $(cat "$TMP/cap2.out")"
+assert_jq "$CAT" '.plugins[] | select(.id == "alpha@market-one") | .group' "core-quality" "curated group survives re-capture"
+assert_jq "$CAT" '.plugins[] | select(.id == "alpha@market-one") | .description' "Curated alpha" "curated description survives re-capture"
+assert_jq "$CAT" '.plugins[] | select(.id == "ghost@market-one") | .id' "ghost@market-one" "item missing from machine is kept"
+assert_contains "$TMP/cap2.out" "ghost@market-one" "missing item is reported in the capture summary"
+assert_jq "$CAT" '.mcpServers[0].config.env.API_KEY' '${MY_RENAMED_KEY}' "hand-renamed env reference survives re-capture"
+assert_jq "$CAT" '.connectors[0].id' "Notion" "connectors list survives re-capture"
+assert_jq "$CAT" '.plugins[] | select(.id == "beta@market-one") | .group' "ungrouped" "uncurated item stays ungrouped"
 
 # ─── 3. Secret redaction ──────────────────────────────────────────────────────
 
 echo "Test 3: captured MCP credentials are redacted"
-assert_jq "$CAT" '.mcpServers[0].config.env.API_KEY' '${FAKE_SERVER_API_KEY}' "env value replaced with \${SERVERID_KEY} placeholder"
+assert_jq "$CAT" '.mcpServers[0].config.env.API_KEY' '${MY_RENAMED_KEY}' "hand-renamed env reference persisted from test 2"
 if grep -r "hunter2" "$CAP" >/dev/null 2>&1; then
   fail "literal secret found somewhere under the capture output dir"
 fi
