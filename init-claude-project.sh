@@ -14,6 +14,11 @@ README_PATH="$TEMPLATE_DIR/README.md"
 TARGET_CLAUDE="$TARGET_DIR/CLAUDE.md"
 TEMPLATE_CLAUDE="$TEMPLATE_DIR/CLAUDE.md"
 
+# ─── Stack Catalog Locations ──────────────────────────────────────────────────
+# Overridable so tests never touch the real ~/.claude or templates/.
+STACK_CATALOG="${CLAUDE_STACK_CATALOG:-$TEMPLATE_DIR/templates/catalog.json}"
+STACK_SKILLS_DIR="${CLAUDE_STACK_SKILLS_DIR:-$TEMPLATE_DIR/templates/skills}"
+
 # ─── Agent Registry ───────────────────────────────────────────────────────────
 # Source of truth for all available agents.
 # Format: "filename.md|Display Name|Short description"
@@ -340,6 +345,157 @@ sync_autonomy() {
   fi
 }
 
+# ─── Stack Catalog Capture ────────────────────────────────────────────────────
+# --capture: refresh templates/catalog.json + templates/skills/ from THIS
+# machine's user-level Claude Code config. Curated fields (group/description)
+# survive refreshes; new items land in "ungrouped"; items no longer on the
+# machine are kept and reported, never auto-removed. MCP env/header values are
+# ALWAYS redacted to ${SERVERID_KEY} placeholders — a credential must never
+# reach the repo.
+capture_stack() {
+  local user_dir="${CLAUDE_USER_DIR:-$HOME/.claude}"
+  local user_config="${CLAUDE_USER_CONFIG:-$HOME/.claude.json}"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "❌ --capture requires jq"
+    exit 1
+  fi
+
+  echo "Capturing stack from: $user_dir"
+
+  # Plugins: user-level object {"x@y": true} → [{id, group, description}],
+  # enabled entries only.
+  local plugins='[]'
+  if [[ -f "$user_dir/settings.json" ]]; then
+    plugins=$(jq '[.enabledPlugins // {} | to_entries[] | select(.value == true)
+                   | {id: .key, group: "ungrouped", description: ""}]' \
+              "$user_dir/settings.json" 2>/dev/null) || plugins='[]'
+  fi
+
+  # Marketplaces: keep only the source ref — install paths and timestamps are
+  # machine-local noise.
+  local marketplaces='{}'
+  if [[ -f "$user_dir/plugins/known_marketplaces.json" ]]; then
+    marketplaces=$(jq 'with_entries(.value |= {source: .source})' \
+                   "$user_dir/plugins/known_marketplaces.json" 2>/dev/null) || marketplaces='{}'
+  fi
+
+  # MCP servers (user scope only), env/header values redacted at the source.
+  local mcps='[]'
+  if [[ -f "$user_config" ]]; then
+    mcps=$(jq '
+      def slug: ascii_upcase | gsub("[^A-Z0-9]"; "_");
+      [.mcpServers // {} | to_entries[]
+       | .key as $id
+       | {id: $id, group: "ungrouped", description: "",
+          config: (.value
+            | if .env then .env = (.env
+                | with_entries(.value = "${\($id | slug)_\(.key | slug)}")) else . end
+            | if .headers then .headers = (.headers
+                | with_entries(.value = "${\($id | slug)_\(.key | slug)}")) else . end)}]
+    ' "$user_config" 2>/dev/null) || mcps='[]'
+  fi
+
+  # Skills: catalog entry (description scraped from frontmatter) + body snapshot.
+  local skills='[]' d name desc
+  if [[ -d "$user_dir/skills" ]]; then
+    mkdir -p "$STACK_SKILLS_DIR"
+    for d in "$user_dir/skills"/*/; do
+      [[ -f "${d}SKILL.md" ]] || continue
+      name="$(basename "$d")"
+      desc="$(awk '/^description:/ { sub(/^description:[[:space:]]*/, ""); print; exit }' "${d}SKILL.md")"
+      skills=$(jq --arg id "$name" --arg desc "$desc" \
+        '. + [{id: $id, group: "ungrouped", description: $desc}]' <<<"$skills")
+      rm -rf "$STACK_SKILLS_DIR/$name"
+      cp -r "${d%/}" "$STACK_SKILLS_DIR/$name"
+    done
+  fi
+
+  local old='{}'
+  if [[ -f "$STACK_CATALOG" ]]; then
+    old=$(jq . "$STACK_CATALOG" 2>/dev/null) || old='{}'
+  fi
+
+  mkdir -p "$(dirname "$STACK_CATALOG")"
+  if ! jq -n \
+      --argjson old "$old" \
+      --argjson plugins "$plugins" \
+      --argjson skills "$skills" \
+      --argjson mcps "$mcps" \
+      --argjson marketplaces "$marketplaces" \
+      --arg today "$(date +%Y-%m-%d)" '
+    # Curation survives refreshes: an item already in the catalog keeps its
+    # group and (non-empty) description; scraped facts are refreshed.
+    def curated($olditems):
+      ($olditems | map({key: .id, value: .}) | from_entries) as $o
+      | map(
+          if $o[.id] == null then .
+          else . + {group: ($o[.id].group // "ungrouped")}
+                 + (if (($o[.id].description // "") != "")
+                    then {description: $o[.id].description} else {} end)
+          end);
+    # A hand-renamed ${...} env reference in the old catalog wins over the
+    # freshly derived one (same key, both are placeholders — never a literal).
+    def keep_env_refs($olditems):
+      ($olditems | map({key: .id, value: .}) | from_entries) as $o
+      | map(. as $item
+          | if ($o[$item.id].config.env? // null) == null
+               or ($item.config.env? // null) == null then $item
+            else $item | .config.env |= with_entries(
+              ($o[$item.id].config.env[.key] // "") as $prev
+              | if ($prev | test("^\\$\\{[A-Z0-9_]+\\}$"))
+                then .value = $prev else . end)
+            end);
+    def keep_missing($olditems; $newitems):
+      ($newitems | map(.id)) as $ids
+      | [$olditems[] | select(.id as $i | $ids | index($i) | not)];
+    {
+      capturedAt: $today,
+      marketplaces: $marketplaces,
+      groups: ($old.groups // [
+        {id: "core-quality",    name: "Core Quality & Workflow", description: "Review, commits, TDD, process guardrails"},
+        {id: "frontend-design", name: "Frontend & Design",       description: "Figma, Playwright, UI generation"},
+        {id: "cloudflare",      name: "Cloudflare Stack",        description: "Workers, Wrangler, DO, CF email"},
+        {id: "email",           name: "Email Stack",             description: "Resend, React Email, deliverability"},
+        {id: "backend-data",    name: "Backend & Data",          description: "Supabase, Postman, Laravel"},
+        {id: "cms-commerce",    name: "CMS & Commerce",          description: "WordPress, Shopify Liquid"},
+        {id: "diagrams",        name: "Diagrams",                description: "Infra + architecture diagram generators"},
+        {id: "planning",        name: "Planning & PRDs",         description: "PRD writing, issue breakdown"},
+        {id: "workflow-extras", name: "Workflow Extras",         description: "Memory, output styles, misc tooling"}
+      ]),
+      plugins:    (($plugins | curated($old.plugins // []))
+                   + keep_missing($old.plugins // []; $plugins)),
+      skills:     (($skills | curated($old.skills // []))
+                   + keep_missing($old.skills // []; $skills)),
+      mcpServers: (($mcps | curated($old.mcpServers // []) | keep_env_refs($old.mcpServers // []))
+                   + keep_missing($old.mcpServers // []; $mcps)),
+      connectors: ($old.connectors // [])
+    }' > "$STACK_CATALOG.tmp.$$"; then
+    rm -f "$STACK_CATALOG.tmp.$$"
+    echo "❌ catalog build failed — $STACK_CATALOG left unchanged"
+    exit 1
+  fi
+  mv "$STACK_CATALOG.tmp.$$" "$STACK_CATALOG"
+
+  # Summary + curation/hygiene warnings.
+  local total ungrouped missing suspicious
+  total=$(jq '[.plugins, .skills, .mcpServers] | map(length) | add' "$STACK_CATALOG")
+  echo "  ✓ catalog written: $STACK_CATALOG ($total items)"
+  ungrouped=$(jq -r '[.plugins[], .skills[], .mcpServers[]
+                      | select(.group == "ungrouped") | .id] | join(", ")' "$STACK_CATALOG")
+  [[ -n "$ungrouped" ]] && echo "  ⚠ ungrouped (edit the catalog to curate): $ungrouped"
+  missing=$(jq -nr --argjson old "$old" --argjson p "$plugins" --argjson s "$skills" --argjson m "$mcps" '
+    [($p + $s + $m)[] | .id] as $now
+    | [(($old.plugins // []) + ($old.skills // []) + ($old.mcpServers // []))[]
+       | .id | select(. as $i | $now | index($i) | not)] | join(", ")')
+  [[ -n "$missing" ]] && echo "  ⚠ in catalog but not on this machine (kept): $missing"
+  suspicious=$(jq -r '[.mcpServers[] | .id as $i
+    | ((.config.url // ""), ((.config.args // [])[]))
+    | select(test("(key|token|secret|password)="; "i")) | $i] | unique | join(", ")' "$STACK_CATALOG")
+  [[ -n "$suspicious" ]] && echo "  ⚠ possible inline credential in url/args of: $suspicious — review before committing"
+  return 0
+}
+
 # ─── Changelog Seeding ────────────────────────────────────────────────────────
 # Deterministic layer for public-facing changelogs. Seeds an empty Keep a
 # Changelog scaffold at the repo root and in every detected sub-project, and
@@ -514,6 +670,11 @@ update_readme_agents_table() {
 }
 
 # ─── Upgrade Mode ─────────────────────────────────────────────────────────────
+
+if [[ "$1" == "--capture" ]]; then
+  capture_stack
+  exit 0
+fi
 
 if [[ "$1" == "--update-readme" ]]; then
   update_readme_agents_table
