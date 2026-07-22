@@ -496,6 +496,187 @@ capture_stack() {
   return 0
 }
 
+# ─── Stack Picker ─────────────────────────────────────────────────────────────
+# Grouped selection: one [a]ll/[n]one/[p]ick prompt per non-empty catalog
+# group, "ungrouped" offered last. Fills the STACK_SEL_* globals; sync_stack
+# writes them into the target. All read -p calls consume stdin (tests pipe
+# scripted answers) — jq output is loaded via mapfile first so loops never
+# steal the prompts' stdin.
+STACK_SEL_PLUGINS=()
+STACK_SEL_SKILLS=()
+STACK_SEL_MCPS=()
+STACK_SEL_GROUPS=()
+
+stack_add() {  # $1 = kind (plugin|skill|mcp), $2 = id
+  case "$1" in
+    plugin) STACK_SEL_PLUGINS+=("$2") ;;
+    skill)  STACK_SEL_SKILLS+=("$2") ;;
+    mcp)    STACK_SEL_MCPS+=("$2") ;;
+  esac
+}
+
+pick_stack() {
+  if [[ ! -f "$STACK_CATALOG" ]]; then
+    echo "  ↷ no stack catalog ($STACK_CATALOG) — skipping stack selection"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  ⚠ jq unavailable — skipping stack selection"
+    return 0
+  fi
+
+  echo ""
+  echo "Select the tooling stack for this project (plugins / skills / MCP servers):"
+
+  local group_lines item_lines gline line gid gname gdesc count anp kind id desc yn picked
+  mapfile -t group_lines < <(jq -r '
+    ((.groups // []) + [{id: "ungrouped", name: "Ungrouped (needs curation)", description: ""}])[]
+    | [.id, .name, .description] | @tsv' "$STACK_CATALOG")
+
+  for gline in "${group_lines[@]}"; do
+    IFS=$'\t' read -r gid gname gdesc <<< "$gline"
+    mapfile -t item_lines < <(jq -r --arg g "$gid" '
+      ((.plugins    // [])[] | select(.group == $g) | ["plugin", .id, .description]),
+      ((.skills     // [])[] | select(.group == $g) | ["skill",  .id, .description]),
+      ((.mcpServers // [])[] | select(.group == $g) | ["mcp",    .id, .description])
+      | @tsv' "$STACK_CATALOG")
+    (( ${#item_lines[@]} > 0 )) || continue
+    count=${#item_lines[@]}
+    echo ""
+    echo "  ── $gname${gdesc:+ — $gdesc} ($count items)"
+    # `|| anp=n`: EOF (Ctrl-D, or a piped answer script running dry) means
+    # "none" — never let a read failure kill the run under set -e.
+    read -p "     [a]ll / [n]one / [p]ick: " anp || anp="n"
+    case "$anp" in
+      a|A)
+        for line in "${item_lines[@]}"; do
+          IFS=$'\t' read -r kind id desc <<< "$line"
+          stack_add "$kind" "$id"
+        done
+        STACK_SEL_GROUPS+=("$gid")
+        echo "     ✓ all $count added"
+        ;;
+      p|P)
+        picked=0
+        for line in "${item_lines[@]}"; do
+          IFS=$'\t' read -r kind id desc <<< "$line"
+          read -p "       Include [$kind] $id${desc:+ — $desc}? (y/n): " yn || yn="n"
+          if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
+            stack_add "$kind" "$id"
+            picked=$((picked + 1))
+          fi
+        done
+        (( picked > 0 )) && STACK_SEL_GROUPS+=("$gid")
+        echo "     ✓ $picked of $count added"
+        ;;
+      *) echo "     ↷ skipped" ;;
+    esac
+  done
+
+  # Connectors are account-bound (claude.ai settings) — recommend, never prompt.
+  if (( ${#STACK_SEL_PLUGINS[@]} + ${#STACK_SEL_SKILLS[@]} + ${#STACK_SEL_MCPS[@]} > 0 )); then
+    local selg='[]' notes
+    (( ${#STACK_SEL_GROUPS[@]} > 0 )) \
+      && selg=$(printf '%s\n' "${STACK_SEL_GROUPS[@]}" | jq -R . | jq -s .)
+    notes=$(jq -r --argjson sel "$selg" '
+      [(.connectors // [])[]
+       | select((.group == null) or (.group as $g | $sel | index($g)))
+       | "       - \(.id): \(.note // "enable in claude.ai account settings")"]
+      | join("\n")' "$STACK_CATALOG")
+    if [[ -n "$notes" ]]; then
+      echo ""
+      echo "     ℹ claude.ai connectors that pair with this selection (account-level — not project-configurable):"
+      echo "$notes"
+    fi
+  fi
+}
+
+# ─── Stack Distribution ───────────────────────────────────────────────────────
+# Writes the picker's selection into the target as declarative config Claude
+# Code natively installs from: enabledPlugins + extraKnownMarketplaces into
+# .claude/settings.json (additive), MCP servers into .mcp.json (additive),
+# vendored skill bodies into .claude/skills/. No installs are scripted —
+# opening Claude Code in the project triggers its own trust/install prompts.
+sync_stack() {
+  if (( ${#STACK_SEL_PLUGINS[@]} + ${#STACK_SEL_SKILLS[@]} + ${#STACK_SEL_MCPS[@]} == 0 )); then
+    echo "    ↷ no stack items selected"
+    return 0
+  fi
+
+  # 1. Plugins → .claude/settings.json (project-level ARRAY format).
+  if (( ${#STACK_SEL_PLUGINS[@]} > 0 )); then
+    local tgt="$TARGET_DIR/.claude/settings.json" sel mkts
+    sel=$(printf '%s\n' "${STACK_SEL_PLUGINS[@]}" | jq -R . | jq -s .)
+    mkts=$(jq --argjson sel "$sel" \
+      '($sel | map(split("@")[1]) | unique) as $names
+       | (.marketplaces // {}) | with_entries(select(.key as $k | $names | index($k)))' \
+      "$STACK_CATALOG")
+    mkdir -p "$TARGET_DIR/.claude"
+    if [[ ! -f "$tgt" ]]; then
+      jq -n --argjson sel "$sel" --argjson m "$mkts" \
+        '{enabledPlugins: ($sel | unique), extraKnownMarketplaces: $m}' > "$tgt"
+      echo "    ✓ settings.json created (${#STACK_SEL_PLUGINS[@]} plugin(s))"
+    elif ! jq -e . "$tgt" >/dev/null 2>&1; then
+      echo "    ⚠ settings.json is not valid JSON — add enabledPlugins manually"
+    elif [[ "$(jq -r '.enabledPlugins | type' "$tgt")" == "object" ]]; then
+      echo "    ⚠ settings.json has object-shaped enabledPlugins (user-level format) — not rewriting; add plugins manually"
+    else
+      if jq --argjson sel "$sel" --argjson m "$mkts" \
+           '.enabledPlugins = ((.enabledPlugins // []) + $sel | unique)
+            | .extraKnownMarketplaces = ($m + (.extraKnownMarketplaces // {}))' \
+           "$tgt" > "$tgt.tmp.$$" && mv "$tgt.tmp.$$" "$tgt"; then
+        echo "    ✓ settings.json: ${#STACK_SEL_PLUGINS[@]} plugin(s) merged additively (existing entries preserved)"
+      else
+        rm -f "$tgt.tmp.$$"
+        echo "    ⚠ plugin merge failed — settings.json left unchanged"
+      fi
+    fi
+  fi
+
+  # 2. MCP servers → .mcp.json (existing keys always win).
+  if (( ${#STACK_SEL_MCPS[@]} > 0 )); then
+    local mcpf="$TARGET_DIR/.mcp.json" selm cfgs refs
+    selm=$(printf '%s\n' "${STACK_SEL_MCPS[@]}" | jq -R . | jq -s .)
+    cfgs=$(jq --argjson sel "$selm" \
+      '[(.mcpServers // [])[] | select(.id as $i | $sel | index($i))]
+       | map({key: .id, value: .config}) | from_entries' "$STACK_CATALOG")
+    if [[ ! -f "$mcpf" ]]; then
+      jq -n --argjson c "$cfgs" '{mcpServers: $c}' > "$mcpf"
+      echo "    ✓ .mcp.json created (${#STACK_SEL_MCPS[@]} server(s))"
+    elif ! jq -e . "$mcpf" >/dev/null 2>&1; then
+      echo "    ⚠ .mcp.json is not valid JSON — add servers manually"
+    else
+      if jq --argjson c "$cfgs" '.mcpServers = ($c + (.mcpServers // {}))' \
+           "$mcpf" > "$mcpf.tmp.$$" && mv "$mcpf.tmp.$$" "$mcpf"; then
+        echo "    ✓ .mcp.json: server(s) merged (existing entries preserved)"
+      else
+        rm -f "$mcpf.tmp.$$"
+        echo "    ⚠ .mcp.json merge failed — left unchanged"
+      fi
+    fi
+    refs=$(jq -nr --argjson c "$cfgs" \
+      '[$c | .. | strings | scan("\\$\\{[A-Z0-9_]+\\}")] | unique | join(", ")')
+    [[ -n "$refs" ]] && echo "    ℹ set these env vars for the MCP server(s): $refs"
+  fi
+
+  # 3. Skills → .claude/skills/ (vendored bodies, template-owned).
+  if (( ${#STACK_SEL_SKILLS[@]} > 0 )); then
+    mkdir -p "$TARGET_DIR/.claude/skills"
+    local s scount=0
+    for s in "${STACK_SEL_SKILLS[@]}"; do
+      if [[ -d "$STACK_SKILLS_DIR/$s" ]]; then
+        rm -rf "$TARGET_DIR/.claude/skills/$s"
+        cp -r "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
+        scount=$((scount + 1))
+      else
+        echo "    ⚠ skill '$s' not found in $STACK_SKILLS_DIR — skipped"
+      fi
+    done
+    echo "    → $scount skill(s) vendored into .claude/skills/"
+  fi
+  return 0
+}
+
 # ─── Changelog Seeding ────────────────────────────────────────────────────────
 # Deterministic layer for public-facing changelogs. Seeds an empty Keep a
 # Changelog scaffold at the repo root and in every detected sub-project, and
@@ -786,6 +967,10 @@ done
 
 echo ""
 
+# ─── Stack Selection ──────────────────────────────────────────────────────────
+
+pick_stack
+
 # ─── Create Directory Structure ───────────────────────────────────────────────
 
 echo "Creating .claude/ structure..."
@@ -813,6 +998,12 @@ sync_commands
 echo ""
 echo "Installing autonomy layer (statusline + guard hooks + autopilot)..."
 sync_autonomy
+
+# ─── Stack Distribution ───────────────────────────────────────────────────────
+
+echo ""
+echo "Writing tooling stack (plugins / MCP servers / skills)..."
+sync_stack
 
 # ─── Initialize Knowledge Base ────────────────────────────────────────────────
 
@@ -868,6 +1059,8 @@ echo "Agents installed (${#SELECTED_AGENTS[@]}):"
 for agent in "${SELECTED_AGENTS[@]}"; do
   echo "  - ${agent%.md}"
 done
+echo ""
+echo "Stack installed: ${#STACK_SEL_PLUGINS[@]} plugin(s), ${#STACK_SEL_MCPS[@]} MCP server(s), ${#STACK_SEL_SKILLS[@]} skill(s)"
 echo ""
 echo "Useful commands:"
 echo "  bash init-claude-project.sh --upgrade        — re-merge CLAUDE.md after adding agents"

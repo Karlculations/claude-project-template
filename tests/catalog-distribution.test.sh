@@ -116,5 +116,62 @@ if grep -r "hunter2" "$CAP" >/dev/null 2>&1; then
 fi
 ok "literal secret appears nowhere in the captured output"
 
+# ─── 4. Full init writes the selection into the project ───────────────────────
+
+# The full-init flow prompts: name, type, stack, one y/n per registry agent,
+# then one a/n/p per non-empty catalog group. Keep the agent count assertion
+# loud so registry growth fails here, not as a silent hang.
+AGENT_PROMPTS=$(grep -c '^  "[a-z-]*\.md|' "$INIT")
+[[ "$AGENT_PROMPTS" == "10" ]] || fail "AGENT_REGISTRY has $AGENT_PROMPTS entries (expected 10) — update the scripted answers in Tests 4–8"
+AGENT_NOES=$'n\nn\nn\nn\nn\nn\nn\nn\nn\nn'
+# Test 8 runs --sync on PROJ, and --sync refuses projects with zero agents —
+# so PROJ (Tests 4/7/8) installs the first registry agent (senior-dev).
+AGENT_ONE_YES=$'y\nn\nn\nn\nn\nn\nn\nn\nn\nn'
+
+run_init() {  # $1 = project dir, $2 = answers, $3 = stdout file
+  ( cd "$1" && printf '%s\n' "$2" \
+      | CLAUDE_STACK_CATALOG="$CAT" CLAUDE_STACK_SKILLS_DIR="$CAP/skills" \
+        bash "$INIT" > "$3" 2>&1 )
+}
+
+echo "Test 4: full init writes plugins, MCP servers, and skills into the project"
+PROJ="$TMP/proj"
+mkdir -p "$PROJ"
+# Group prompts for the current catalog: core-quality has items (alpha, ghost)
+# → 'a'; ungrouped has items (beta, fixskill, fake-server) → 'a'.
+run_init "$PROJ" "proj
+api
+teststack
+$AGENT_ONE_YES
+a
+a" "$TMP/init4.out" || fail "full init exited non-zero: $(cat "$TMP/init4.out")"
+
+SETTINGS="$PROJ/.claude/settings.json"
+assert_file "$SETTINGS" "project settings.json exists"
+assert_jq "$SETTINGS" '.enabledPlugins | type' "array" "enabledPlugins is project-level array format"
+assert_jq "$SETTINGS" '.enabledPlugins | contains(["alpha@market-one","beta@market-one"])' "true" "selected plugins present"
+assert_jq "$SETTINGS" '.extraKnownMarketplaces["market-one"].source.repo' "acme/market-one" "marketplace ref carried for selected plugins"
+assert_jq "$SETTINGS" 'has("statusLine")' "true" "autonomy settings not clobbered by stack merge"
+MCPJ="$PROJ/.mcp.json"
+assert_file "$MCPJ" ".mcp.json created"
+assert_jq "$MCPJ" '.mcpServers["fake-server"].env.API_KEY' '${MY_RENAMED_KEY}' "MCP config lands with redacted reference"
+assert_file "$PROJ/.claude/skills/fixskill/SKILL.md" "selected skill vendored into project"
+assert_contains "$TMP/init4.out" "MY_RENAMED_KEY" "init output lists env vars the user must set"
+
+echo "Test 4b: additive merges preserve existing project entries"
+PROJ2="$TMP/proj2"
+mkdir -p "$PROJ2/.claude"
+echo '{"enabledPlugins": ["keep-me@existing"], "extraKnownMarketplaces": {"market-one": {"source": {"source": "github", "repo": "user/own-fork"}}}}' > "$PROJ2/.claude/settings.json"
+echo '{"mcpServers": {"fake-server": {"command": "user-custom"}}}' > "$PROJ2/.mcp.json"
+run_init "$PROJ2" "proj2
+api
+teststack
+$AGENT_NOES
+a
+a" "$TMP/init4b.out" || fail "init on pre-configured project exited non-zero: $(cat "$TMP/init4b.out")"
+assert_jq "$PROJ2/.claude/settings.json" '.enabledPlugins | contains(["keep-me@existing"])' "true" "pre-existing plugin entry preserved"
+assert_jq "$PROJ2/.claude/settings.json" '.extraKnownMarketplaces["market-one"].source.repo' "user/own-fork" "existing marketplace key never overwritten"
+assert_jq "$PROJ2/.mcp.json" '.mcpServers["fake-server"].command' "user-custom" "existing MCP server entry never overwritten"
+
 echo ""
 echo "PASS — $PASS_COUNT assertions"
