@@ -83,6 +83,7 @@ assert_jq "$CAT" '.skills[0].description' "A fixture skill for tests." "skill de
 assert_file "$CAP/skills/fixskill/SKILL.md" "skill body snapshotted into skills dir"
 assert_jq "$CAT" '.groups | length' "9" "default group scaffold seeded on first capture"
 assert_jq "$CAT" '.mcpServers[0].id' "fake-server" "user-scope MCP server captured"
+assert_jq "$CAT" '.mcpServers[0].config.env.API_KEY' '${FAKE_SERVER_API_KEY}' "env value redacted to derived \${SERVERID_KEY} slug on first capture"
 
 # ─── 2. Refresh semantics ─────────────────────────────────────────────────────
 
