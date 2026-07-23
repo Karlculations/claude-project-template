@@ -246,7 +246,7 @@ The result: a session that saves its own memory before running out of context, r
 |---|---|
 | `bash init-claude-project.sh` | Full init or smart upgrade on the current directory |
 | `bash init-claude-project.sh --upgrade` | Re-run the CLAUDE.md merge only (useful after adding agents) |
-| `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + commands + autonomy hooks + CLAUDE.md, and seed root + sub-project changelogs (knowledge base untouched; existing changelog content never rewritten; settings.json merged, never clobbered) |
+| `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + vendored skills + commands + autonomy hooks + CLAUDE.md, and seed root + sub-project changelogs (knowledge base untouched; existing changelog content never rewritten; settings.json merged, never clobbered) |
 | `.claude/autopilot.sh "task" [max_turns]` | Unattended runner: works in turns, pauses at the usage threshold, resumes after the window resets |
 | `bash init-claude-project.sh --update-readme` | Rebuild the agents table in README.md from the registry |
 | `bash init-claude-project.sh --capture` | Refresh `templates/catalog.json` + `templates/skills/` from this machine |

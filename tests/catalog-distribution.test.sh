@@ -77,7 +77,7 @@ description: A symlinked skill.
 EOF
   ln -s ../skills-store/linked-skill "$u/skills/linked-skill"
   cat > "$u/user-config.json" <<'EOF'
-{"mcpServers": {"fake-server": {"type": "stdio", "command": "npx", "args": ["-y", "fake"], "env": {"API_KEY": "hunter2-super-secret"}}}}
+{"mcpServers": {"fake-server": {"type": "stdio", "command": "npx", "args": ["-y", "fake"], "env": {"API_KEY": "hunter2-super-secret"}}, "fake-http": {"type": "http", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer sekrit-header-token"}}}}
 EOF
 }
 
@@ -115,6 +115,7 @@ assert_jq "$CAT" '.skills[] | select(.id == "linked-skill") | .description' "A s
 assert_jq "$CAT" '.groups | length' "9" "default group scaffold seeded on first capture"
 assert_jq "$CAT" '.mcpServers[0].id' "fake-server" "user-scope MCP server captured"
 assert_jq "$CAT" '.mcpServers[0].config.env.API_KEY' '${FAKE_SERVER_API_KEY}' "env value redacted to derived \${SERVERID_KEY} slug on first capture"
+assert_jq "$CAT" '.mcpServers[] | select(.id=="fake-http") | .config.headers.Authorization' '${FAKE_HTTP_AUTHORIZATION}' "header value redacted to derived \${SERVERID_KEY} slug on first capture"
 
 # ─── 2. Refresh semantics ─────────────────────────────────────────────────────
 
@@ -146,6 +147,10 @@ if grep -r "hunter2" "$CAP" >/dev/null 2>&1; then
   fail "literal secret found somewhere under the capture output dir"
 fi
 ok "literal secret appears nowhere in the captured output"
+if grep -r "sekrit-header-token" "$CAP" >/dev/null 2>&1; then
+  fail "literal header secret found somewhere under the capture output dir"
+fi
+ok "literal header secret appears nowhere in the captured output"
 
 echo "Test 3b: credential passed as a separate argv element (no '=') also warns"
 U3B="$TMP/userdir3b"
@@ -184,7 +189,7 @@ PROJ="$TMP/proj"
 mkdir -p "$PROJ"
 # Group prompts for the current catalog: core-quality has items (alpha, ghost)
 # → 'a'; ungrouped has items (beta, fixskill, quoted-skill, folded-skill,
-# linked-skill, fake-server) → 'a'.
+# linked-skill, fake-server, fake-http) → 'a'.
 run_init "$PROJ" "proj
 api
 teststack

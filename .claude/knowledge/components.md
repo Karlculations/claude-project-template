@@ -77,7 +77,7 @@ Copies hooks + autopilot into the target (template-owned: always overwritten, ch
 **Added**: 2026-07-21
 
 **What it does**:
-44 assertions, no network (override/state-file seams only): syntax, sensor render+cache, all guard paths (block/pass/bypass/threshold/cache-read), context-guard (block/once-per-session/stop_hook_active/fail-open), compaction brief, and three `--sync` distribution scenarios (fresh install, merge, hooks-conflict).
+78 assertions, no network (override/state-file seams only): syntax, sensor render+cache, all guard paths (block/pass/bypass/threshold/cache-read), context-guard (block/once-per-session/stop_hook_active/fail-open), compaction brief, and three `--sync` distribution scenarios (fresh install, merge, hooks-conflict).
 
 ---
 

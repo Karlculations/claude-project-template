@@ -448,8 +448,8 @@ capture_stack() {
                  + (if (($o[.id].description // "") != "")
                     then {description: $o[.id].description} else {} end)
           end);
-    # A hand-renamed ${...} env reference in the old catalog wins over the
-    # freshly derived one (same key, both are placeholders — never a literal).
+    # A hand-renamed ${...} env/header reference in the old catalog wins over
+    # the freshly derived one (same key, both are placeholders — never a literal).
     def keep_env_refs($olditems):
       ($olditems | map({key: .id, value: .}) | from_entries) as $o
       | map(. as $item
@@ -457,6 +457,14 @@ capture_stack() {
                or ($item.config.env? // null) == null then $item
             else $item | .config.env |= with_entries(
               ($o[$item.id].config.env[.key] // "") as $prev
+              | if ($prev | test("^\\$\\{[A-Z0-9_]+\\}$"))
+                then .value = $prev else . end)
+            end)
+      | map(. as $item
+          | if ($o[$item.id].config.headers? // null) == null
+               or ($item.config.headers? // null) == null then $item
+            else $item | .config.headers |= with_entries(
+              ($o[$item.id].config.headers[.key] // "") as $prev
               | if ($prev | test("^\\$\\{[A-Z0-9_]+\\}$"))
                 then .value = $prev else . end)
             end);
@@ -1125,6 +1133,6 @@ echo "Stack installed: ${#STACK_SEL_PLUGINS[@]} plugin(s), ${#STACK_SEL_MCPS[@]}
 echo ""
 echo "Useful commands:"
 echo "  bash init-claude-project.sh --upgrade        — re-merge CLAUDE.md after adding agents"
-echo "  bash init-claude-project.sh --sync           — pull updated agent bodies + commands + CLAUDE.md, and seed changelogs"
+echo "  bash init-claude-project.sh --sync           — pull updated agent bodies + vendored skills + commands + CLAUDE.md, and seed changelogs"
 echo "  bash init-claude-project.sh --update-readme  — rebuild README agents table"
 echo ""
