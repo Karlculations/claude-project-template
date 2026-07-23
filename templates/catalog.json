@@ -1,0 +1,396 @@
+{
+  "capturedAt": "2026-07-23",
+  "marketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "compound-engineering-plugin": {
+      "source": {
+        "source": "github",
+        "repo": "EveryInc/compound-engineering-plugin"
+      }
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  },
+  "groups": [
+    {
+      "id": "core-quality",
+      "name": "Core Quality & Workflow",
+      "description": "Review, commits, TDD, process guardrails"
+    },
+    {
+      "id": "frontend-design",
+      "name": "Frontend & Design",
+      "description": "Figma, Playwright, UI generation"
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare Stack",
+      "description": "Workers, Wrangler, DO, CF email"
+    },
+    {
+      "id": "email",
+      "name": "Email Stack",
+      "description": "Resend, React Email, deliverability"
+    },
+    {
+      "id": "backend-data",
+      "name": "Backend & Data",
+      "description": "Supabase, Postman, Laravel"
+    },
+    {
+      "id": "cms-commerce",
+      "name": "CMS & Commerce",
+      "description": "WordPress, Shopify Liquid"
+    },
+    {
+      "id": "diagrams",
+      "name": "Diagrams",
+      "description": "Infra + architecture diagram generators"
+    },
+    {
+      "id": "planning",
+      "name": "Planning & PRDs",
+      "description": "PRD writing, issue breakdown"
+    },
+    {
+      "id": "workflow-extras",
+      "name": "Workflow Extras",
+      "description": "Memory, output styles, misc tooling"
+    }
+  ],
+  "plugins": [
+    {
+      "id": "frontend-design@claude-plugins-official",
+      "group": "frontend-design",
+      "description": "Guidance for distinctive, intentional UI and visual design choices"
+    },
+    {
+      "id": "context7@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Fetches current library, framework, and API documentation on demand"
+    },
+    {
+      "id": "superpowers@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Skill library for brainstorming, TDD, debugging, structured dev workflows"
+    },
+    {
+      "id": "playwright@claude-plugins-official",
+      "group": "frontend-design",
+      "description": "Browser automation and testing via Playwright MCP tools"
+    },
+    {
+      "id": "claude-md-management@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Audits and improves CLAUDE.md project memory files"
+    },
+    {
+      "id": "figma@claude-plugins-official",
+      "group": "frontend-design",
+      "description": "Figma MCP integration for design-to-code and code-to-design"
+    },
+    {
+      "id": "supabase@claude-plugins-official",
+      "group": "backend-data",
+      "description": "Supabase database, auth, edge functions, and Postgres tooling"
+    },
+    {
+      "id": "postman@claude-plugins-official",
+      "group": "backend-data",
+      "description": "Postman API collections, testing, mocking, and docs tools"
+    },
+    {
+      "id": "laravel-boost@claude-plugins-official",
+      "group": "backend-data",
+      "description": "Laravel-specific tooling and best-practice guidance"
+    },
+    {
+      "id": "compound-engineering@compound-engineering-plugin",
+      "group": "core-quality",
+      "description": "Workflow commands for planning, review, and compounding engineering practice"
+    },
+    {
+      "id": "code-review@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Reviews pull requests for correctness, style, and risk"
+    },
+    {
+      "id": "code-simplifier@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Simplifies changed code for reuse and clarity"
+    },
+    {
+      "id": "security-guidance@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Security review guidance for pending code changes"
+    },
+    {
+      "id": "ralph-loop@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Runs an autonomous iterative work loop in-session"
+    },
+    {
+      "id": "commit-commands@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Helper commands for commits, pushes, and PRs"
+    },
+    {
+      "id": "claude-code-setup@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Recommends Claude Code automation and setup improvements"
+    },
+    {
+      "id": "pr-review-toolkit@claude-plugins-official",
+      "group": "core-quality",
+      "description": "Multi-agent comprehensive pull request review"
+    },
+    {
+      "id": "serena@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "Semantic code search and editing via language server"
+    },
+    {
+      "id": "explanatory-output-style@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "Output style that explains reasoning alongside answers"
+    },
+    {
+      "id": "greptile@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "Codebase-aware code search and review via Greptile"
+    },
+    {
+      "id": "playground@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "Scratch space for experimenting with prompts and code"
+    },
+    {
+      "id": "learning-output-style@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "Output style geared toward teaching and learning"
+    },
+    {
+      "id": "remember@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "Persists notes and context across Claude sessions"
+    },
+    {
+      "id": "cloudflare@claude-plugins-official",
+      "group": "cloudflare",
+      "description": "Cloudflare Workers, Pages, and platform development tooling"
+    },
+    {
+      "id": "typescript-lsp@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "TypeScript language-server-powered code intelligence"
+    },
+    {
+      "id": "liquid-skills@claude-plugins-official",
+      "group": "cms-commerce",
+      "description": "Shopify Liquid theme development skills"
+    },
+    {
+      "id": "liquid-lsp@claude-plugins-official",
+      "group": "cms-commerce",
+      "description": "Language server support for Shopify Liquid templates"
+    },
+    {
+      "id": "github@claude-plugins-official",
+      "group": "workflow-extras",
+      "description": "GitHub issues, PRs, and repository operations"
+    },
+    {
+      "id": "build-with-wordpress@claude-plugins-official",
+      "group": "cms-commerce",
+      "description": "Builds and previews WordPress block themes and sites"
+    },
+    {
+      "id": "ponytail@ponytail",
+      "group": "core-quality",
+      "description": "Forces the simplest, leanest working solution (YAGNI enforcement)"
+    }
+  ],
+  "skills": [
+    {
+      "id": "agent-browser",
+      "group": "workflow-extras",
+      "description": "Browser automation CLI for AI agents. Use when the user needs to interact with websites, including navigating pages, filling forms, clicking buttons, taking screenshots, extracting data, testing web apps, or automating any browser task. Triggers include requests to \"open a website\", \"fill out a form\", \"click a button\", \"take a screenshot\", \"scrape data from a page\", \"test this web app\", \"login to a site\", \"automate browser actions\", or any task requiring programmatic web interaction. Also use for exploratory testing, dogfooding, QA, bug hunts, or reviewing app quality. Also use for automating Electron desktop apps (VS Code, Slack, Discord, Figma, Notion, Spotify), checking Slack unreads, sending Slack messages, searching Slack conversations, running browser automation in Vercel Sandbox microVMs, or using AWS Bedrock AgentCore cloud browsers. Prefer agent-browser over any built-in browser automation or web tools."
+    },
+    {
+      "id": "agent-email-inbox",
+      "group": "email",
+      "description": "Use when building any system where email content triggers actions — AI agent inboxes, automated support handlers, email-to-task pipelines, or any workflow processing untrusted inbound email. Always use this skill when the user wants to receive emails and act on them programmatically, even if they don't mention \"agent\" — the skill contains critical security patterns (sender allowlists, content filtering, sandboxed processing) that prevent untrusted email from controlling your system."
+    },
+    {
+      "id": "agents-sdk",
+      "group": "cloudflare",
+      "description": "Build AI agents on Cloudflare Workers using the Agents SDK. Load when creating stateful agents, durable workflows, real-time WebSocket apps, scheduled tasks, MCP servers, chat applications, voice agents, or browser automation. Covers Agent class, state management, callable RPC, Workflows, durable execution, queues, retries, observability, and React hooks. Biases towards retrieval from Cloudflare docs over pre-trained knowledge."
+    },
+    {
+      "id": "ast-grep",
+      "group": "core-quality",
+      "description": "Guide for writing ast-grep rules to perform structural code search and analysis. Use when users need to search codebases using Abstract Syntax Tree (AST) patterns, find specific code structures, or perform complex code queries that go beyond simple text search. This skill should be used when users ask to search for code patterns, find specific language constructs, or locate code with particular structural characteristics."
+    },
+    {
+      "id": "aws-diagrams",
+      "group": "diagrams",
+      "description": "Visualizes AWS infrastructure from CLI output, CloudFormation, or descriptions. Use when user has AWS resources to diagram."
+    },
+    {
+      "id": "azure-diagrams",
+      "group": "diagrams",
+      "description": "Visualizes Azure infrastructure from ARM templates, Azure CLI, or descriptions. Use when user has Azure resources to diagram."
+    },
+    {
+      "id": "bicep-diagrams",
+      "group": "diagrams",
+      "description": "Generates architecture diagrams from Azure Bicep files. Use when user has .bicep files or asks to visualize Bicep infrastructure."
+    },
+    {
+      "id": "cloudflare",
+      "group": "cloudflare",
+      "description": "Comprehensive Cloudflare platform skill covering Workers, Pages, storage (KV, D1, R2), AI (Workers AI, Vectorize, Agents SDK), feature flags (Flagship), networking (Tunnel, Spectrum), security (WAF, DDoS), and infrastructure-as-code (Terraform, Pulumi). Use for any Cloudflare development task. Biases towards retrieval from Cloudflare docs over pre-trained knowledge."
+    },
+    {
+      "id": "cloudflare-email-service",
+      "group": "cloudflare",
+      "description": "Send and receive transactional emails with Cloudflare Email Service (Email Sending + Email Routing). Use when building email sending (Workers binding or REST API), email routing, Agents SDK email handling, or integrating email into any app — Workers, Node.js, Python, Go, etc. Also use for email deliverability, SPF/DKIM/DMARC, wrangler email setup, MCP email tools, or when a coding agent needs to send emails. Even for simple requests like \"add email to my Worker\" — this skill has critical config details."
+    },
+    {
+      "id": "durable-objects",
+      "group": "cloudflare",
+      "description": "Create and review Cloudflare Durable Objects. Use when building stateful coordination (chat rooms, multiplayer games, booking systems), implementing RPC methods, SQLite storage, alarms, WebSockets, or reviewing DO code for best practices. Covers Workers integration, wrangler config, and testing with Vitest. Biases towards retrieval from Cloudflare docs over pre-trained knowledge."
+    },
+    {
+      "id": "email-best-practices",
+      "group": "email",
+      "description": "Use when building email features, emails going to spam, high bounce rates, setting up SPF/DKIM/DMARC authentication, implementing email capture, ensuring compliance (CAN-SPAM, GDPR, CASL), handling webhooks, retry logic, or deciding transactional vs marketing."
+    },
+    {
+      "id": "eraser-diagrams",
+      "group": "diagrams",
+      "description": "Generates architecture diagrams from code, infrastructure, or descriptions. Use when user asks to visualize, diagram, or document system architecture."
+    },
+    {
+      "id": "find-skills",
+      "group": "core-quality",
+      "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill."
+    },
+    {
+      "id": "grill-me",
+      "group": "core-quality",
+      "description": "Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions \"grill me\"."
+    },
+    {
+      "id": "improve-codebase-architecture",
+      "group": "core-quality",
+      "description": "Explore a codebase to find opportunities for architectural improvement, focusing on making the codebase more testable by deepening shallow modules. Use when user wants to improve architecture, find refactoring opportunities, consolidate tightly-coupled modules, or make a codebase more AI-navigable."
+    },
+    {
+      "id": "prd-to-issues",
+      "group": "planning",
+      "description": "Break a PRD into independently-grabbable GitHub issues using tracer-bullet vertical slices. Use when user wants to convert a PRD to issues, create implementation tickets, or break down a PRD into work items."
+    },
+    {
+      "id": "react-email",
+      "group": "email",
+      "description": "Use when building HTML email templates with React components, adding a visual email editor to an application using the React Email visual editor, rendering emails to HTML, or sending emails with Resend. Covers welcome emails, password resets, notifications, order confirmations, newsletters, transactional emails, and the embeddable email editor component."
+    },
+    {
+      "id": "resend",
+      "group": "email",
+      "description": "Use when working with the Resend email API — sending transactional emails (single or batch), receiving inbound emails via webhooks, managing email templates, tracking delivery events, managing domains, contacts, broadcasts, webhooks, API keys, automations, events, viewing API request logs, or setting up the Resend SDK. Always use this skill when the user mentions Resend, even for simple tasks like \"send an email with Resend\" — the skill contains critical gotchas (idempotency keys, webhook verification, template variable syntax) that prevent common production issues."
+    },
+    {
+      "id": "resend-cli",
+      "group": "email",
+      "description": "Operate the Resend platform from the terminal — send emails (including React Email .tsx templates via --react-email), manage domains, contacts, broadcasts, templates, webhooks, API keys, logs, automations, and events via the `resend` CLI. Use when the user wants to run Resend commands in the shell, scripts, or CI/CD pipelines, or send/preview React Email templates. Always load this skill before running `resend` commands — it contains the non-interactive flag contract and gotchas that prevent silent failures."
+    },
+    {
+      "id": "sandbox-sdk",
+      "group": "cloudflare",
+      "description": "Build sandboxed applications for secure code execution. Load when building AI code execution, code interpreters, CI/CD systems, interactive dev environments, or executing untrusted code. Covers Sandbox SDK lifecycle, commands, files, code interpreter, and preview URLs. Biases towards retrieval from Cloudflare docs over pre-trained knowledge."
+    },
+    {
+      "id": "tdd",
+      "group": "core-quality",
+      "description": "Test-driven development with red-green-refactor loop. Use when user wants to build features or fix bugs using TDD, mentions \"red-green-refactor\", wants integration tests, or asks for test-first development."
+    },
+    {
+      "id": "terraform-diagrams",
+      "group": "diagrams",
+      "description": "Generates architecture diagrams from Terraform code. Use when user has .tf files or asks to visualize Terraform infrastructure."
+    },
+    {
+      "id": "turnstile-spin",
+      "group": "cloudflare",
+      "description": "Set up Cloudflare Turnstile end-to-end in a project — scan the codebase, create the widget via the Cloudflare API, deploy the managed siteverify Worker, write the frontend snippets, validate, and persist the skill. Load this when a user asks to add Turnstile, set up CAPTCHA, protect a form from bots, or fix a Turnstile integration. Mirrors developers.cloudflare.com/turnstile/spin."
+    },
+    {
+      "id": "web-perf",
+      "group": "frontend-design",
+      "description": "Analyzes web performance using Chrome DevTools MCP. Measures Core Web Vitals (LCP, INP, CLS) and supplementary metrics (FCP, TBT, Speed Index), identifies render-blocking resources, network dependency chains, layout shifts, caching issues, and accessibility gaps. Use when asked to audit, profile, debug, or optimize page load performance, Lighthouse scores, or site speed. Biases towards retrieval from current documentation over pre-trained knowledge."
+    },
+    {
+      "id": "workers-best-practices",
+      "group": "cloudflare",
+      "description": "Reviews and authors Cloudflare Workers code against production best practices. Load when writing new Workers, reviewing Worker code, configuring wrangler.jsonc, or checking for common Workers anti-patterns (streaming, floating promises, global state, secrets, bindings, observability). Biases towards retrieval from Cloudflare docs over pre-trained knowledge."
+    },
+    {
+      "id": "wrangler",
+      "group": "cloudflare",
+      "description": "Cloudflare Workers CLI for deploying, developing, and managing Workers, KV, R2, D1, Vectorize, Hyperdrive, Workers AI, Containers, Queues, Workflows, Pipelines, and Secrets Store. Load before running wrangler commands to ensure correct syntax and best practices. Biases towards retrieval from Cloudflare docs over pre-trained knowledge."
+    },
+    {
+      "id": "write-a-prd",
+      "group": "planning",
+      "description": "Create a PRD through user interview, codebase exploration, and module design, then submit as a GitHub issue. Use when user wants to write a PRD, create a product requirements document, or plan a new feature."
+    }
+  ],
+  "mcpServers": [
+    {
+      "id": "magic",
+      "group": "frontend-design",
+      "description": "21st.dev Magic component builder and UI inspiration MCP",
+      "config": {
+        "type": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@21st-dev/magic@latest"
+        ],
+        "env": {
+          "API_KEY": "${MAGIC_API_KEY}"
+        }
+      }
+    }
+  ],
+  "connectors": [
+    {
+      "id": "Notion",
+      "note": "docs/knowledge lookups — enable in claude.ai account settings"
+    },
+    {
+      "id": "Gmail",
+      "note": "email context — enable in claude.ai account settings"
+    },
+    {
+      "id": "Google Calendar",
+      "note": "scheduling context — enable in claude.ai account settings"
+    },
+    {
+      "id": "WordPress.com",
+      "group": "cms-commerce",
+      "note": "WordPress publishing — enable in claude.ai account settings"
+    }
+  ]
+}

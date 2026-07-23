@@ -14,6 +14,11 @@ README_PATH="$TEMPLATE_DIR/README.md"
 TARGET_CLAUDE="$TARGET_DIR/CLAUDE.md"
 TEMPLATE_CLAUDE="$TEMPLATE_DIR/CLAUDE.md"
 
+# ─── Stack Catalog Locations ──────────────────────────────────────────────────
+# Overridable so tests never touch the real ~/.claude or templates/.
+STACK_CATALOG="${CLAUDE_STACK_CATALOG:-$TEMPLATE_DIR/templates/catalog.json}"
+STACK_SKILLS_DIR="${CLAUDE_STACK_SKILLS_DIR:-$TEMPLATE_DIR/templates/skills}"
+
 # ─── Agent Registry ───────────────────────────────────────────────────────────
 # Source of truth for all available agents.
 # Format: "filename.md|Display Name|Short description"
@@ -340,6 +345,404 @@ sync_autonomy() {
   fi
 }
 
+# ─── Stack Catalog Capture ────────────────────────────────────────────────────
+# --capture: refresh templates/catalog.json + templates/skills/ from THIS
+# machine's user-level Claude Code config. Curated fields (group/description)
+# survive refreshes; new items land in "ungrouped"; items no longer on the
+# machine are kept and reported, never auto-removed. MCP env/header values are
+# ALWAYS redacted to ${SERVERID_KEY} placeholders — a credential must never
+# reach the repo.
+capture_stack() {
+  local user_dir="${CLAUDE_USER_DIR:-$HOME/.claude}"
+  local user_config="${CLAUDE_USER_CONFIG:-$HOME/.claude.json}"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "❌ --capture requires jq"
+    exit 1
+  fi
+
+  echo "Capturing stack from: $user_dir"
+
+  # Plugins: user-level object {"x@y": true} → [{id, group, description}],
+  # enabled entries only.
+  local plugins='[]'
+  if [[ -f "$user_dir/settings.json" ]]; then
+    plugins=$(jq '[.enabledPlugins // {} | to_entries[] | select(.value == true)
+                   | {id: .key, group: "ungrouped", description: ""}]' \
+              "$user_dir/settings.json" 2>/dev/null) || plugins='[]'
+  fi
+
+  # Marketplaces: keep only the source ref — install paths and timestamps are
+  # machine-local noise.
+  local marketplaces='{}'
+  if [[ -f "$user_dir/plugins/known_marketplaces.json" ]]; then
+    marketplaces=$(jq 'with_entries(.value |= {source: .source})' \
+                   "$user_dir/plugins/known_marketplaces.json" 2>/dev/null) || marketplaces='{}'
+  fi
+
+  # MCP servers (user scope only), env/header values redacted at the source.
+  local mcps='[]'
+  if [[ -f "$user_config" ]]; then
+    mcps=$(jq '
+      def slug: ascii_upcase | gsub("[^A-Z0-9]"; "_");
+      [.mcpServers // {} | to_entries[]
+       | .key as $id
+       | {id: $id, group: "ungrouped", description: "",
+          config: (.value
+            | if .env then .env = (.env
+                | with_entries(.value = "${\($id | slug)_\(.key | slug)}")) else . end
+            | if .headers then .headers = (.headers
+                | with_entries(.value = "${\($id | slug)_\(.key | slug)}")) else . end)}]
+    ' "$user_config" 2>/dev/null) || mcps='[]'
+  fi
+
+  # Skills: catalog entry (description scraped from frontmatter) + body snapshot.
+  local skills='[]' d name desc
+  if [[ -d "$user_dir/skills" ]]; then
+    mkdir -p "$STACK_SKILLS_DIR"
+    for d in "$user_dir/skills"/*/; do
+      [[ -f "${d}SKILL.md" ]] || continue
+      name="$(basename "$d")"
+      # Handles plain scalars, single/double-quoted scalars (surrounding
+      # quotes stripped), and folded/literal block scalars (>, >-, |, |-:
+      # following indented lines joined with spaces, stopping at the first
+      # non-indented line or ---).
+      desc="$(awk '
+        /^description:[[:space:]]*[>|]/ { block=1; next }
+        /^description:/ { sub(/^description:[[:space:]]*/, ""); gsub(/^["'"'"']|["'"'"']$/, ""); print; exit }
+        block && /^[[:space:]]+[^[:space:]]/ { sub(/^[[:space:]]+/, ""); out = out (out ? " " : "") $0; next }
+        block { print out; block=0; exit }
+        END { if (block && out) print out }
+      ' "${d}SKILL.md")"
+      skills=$(jq --arg id "$name" --arg desc "$desc" \
+        '. + [{id: $id, group: "ungrouped", description: $desc}]' <<<"$skills")
+      rm -rf "$STACK_SKILLS_DIR/$name"
+      # -L: dereference. A user-level skill dir is often itself a symlink (e.g.
+      # into a dotfiles checkout); plain `cp -r` would copy the symlink as-is,
+      # carrying its (often relative) target — which resolves to nothing once
+      # relocated into this repo. -L copies the real content instead.
+      cp -rL "${d%/}" "$STACK_SKILLS_DIR/$name"
+    done
+  fi
+
+  local old='{}'
+  if [[ -f "$STACK_CATALOG" ]]; then
+    old=$(jq . "$STACK_CATALOG" 2>/dev/null) || old='{}'
+  fi
+
+  mkdir -p "$(dirname "$STACK_CATALOG")"
+  if ! jq -n \
+      --argjson old "$old" \
+      --argjson plugins "$plugins" \
+      --argjson skills "$skills" \
+      --argjson mcps "$mcps" \
+      --argjson marketplaces "$marketplaces" \
+      --arg today "$(date +%Y-%m-%d)" '
+    # Curation survives refreshes: an item already in the catalog keeps its
+    # group and (non-empty) description; scraped facts are refreshed.
+    def curated($olditems):
+      ($olditems | map({key: .id, value: .}) | from_entries) as $o
+      | map(
+          if $o[.id] == null then .
+          else . + {group: ($o[.id].group // "ungrouped")}
+                 + (if (($o[.id].description // "") != "")
+                    then {description: $o[.id].description} else {} end)
+          end);
+    # A hand-renamed ${...} env/header reference in the old catalog wins over
+    # the freshly derived one (same key, both are placeholders — never a literal).
+    def keep_env_refs($olditems):
+      ($olditems | map({key: .id, value: .}) | from_entries) as $o
+      | map(. as $item
+          | if ($o[$item.id].config.env? // null) == null
+               or ($item.config.env? // null) == null then $item
+            else $item | .config.env |= with_entries(
+              ($o[$item.id].config.env[.key] // "") as $prev
+              | if ($prev | test("^\\$\\{[A-Z0-9_]+\\}$"))
+                then .value = $prev else . end)
+            end)
+      | map(. as $item
+          | if ($o[$item.id].config.headers? // null) == null
+               or ($item.config.headers? // null) == null then $item
+            else $item | .config.headers |= with_entries(
+              ($o[$item.id].config.headers[.key] // "") as $prev
+              | if ($prev | test("^\\$\\{[A-Z0-9_]+\\}$"))
+                then .value = $prev else . end)
+            end);
+    def keep_missing($olditems; $newitems):
+      ($newitems | map(.id)) as $ids
+      | [$olditems[] | select(.id as $i | $ids | index($i) | not)];
+    {
+      capturedAt: $today,
+      marketplaces: $marketplaces,
+      groups: ($old.groups // [
+        {id: "core-quality",    name: "Core Quality & Workflow", description: "Review, commits, TDD, process guardrails"},
+        {id: "frontend-design", name: "Frontend & Design",       description: "Figma, Playwright, UI generation"},
+        {id: "cloudflare",      name: "Cloudflare Stack",        description: "Workers, Wrangler, DO, CF email"},
+        {id: "email",           name: "Email Stack",             description: "Resend, React Email, deliverability"},
+        {id: "backend-data",    name: "Backend & Data",          description: "Supabase, Postman, Laravel"},
+        {id: "cms-commerce",    name: "CMS & Commerce",          description: "WordPress, Shopify Liquid"},
+        {id: "diagrams",        name: "Diagrams",                description: "Infra + architecture diagram generators"},
+        {id: "planning",        name: "Planning & PRDs",         description: "PRD writing, issue breakdown"},
+        {id: "workflow-extras", name: "Workflow Extras",         description: "Memory, output styles, misc tooling"}
+      ]),
+      plugins:    (($plugins | curated($old.plugins // []))
+                   + keep_missing($old.plugins // []; $plugins)),
+      skills:     (($skills | curated($old.skills // []))
+                   + keep_missing($old.skills // []; $skills)),
+      mcpServers: (($mcps | curated($old.mcpServers // []) | keep_env_refs($old.mcpServers // []))
+                   + keep_missing($old.mcpServers // []; $mcps)),
+      connectors: ($old.connectors // [])
+    }' > "$STACK_CATALOG.tmp.$$"; then
+    rm -f "$STACK_CATALOG.tmp.$$"
+    echo "❌ catalog build failed — $STACK_CATALOG left unchanged"
+    exit 1
+  fi
+  mv "$STACK_CATALOG.tmp.$$" "$STACK_CATALOG"
+
+  # Summary + curation/hygiene warnings.
+  local total ungrouped missing suspicious
+  total=$(jq '[.plugins, .skills, .mcpServers] | map(length) | add' "$STACK_CATALOG")
+  echo "  ✓ catalog written: $STACK_CATALOG ($total items)"
+  ungrouped=$(jq -r '[.plugins[], .skills[], .mcpServers[]
+                      | select(.group == "ungrouped") | .id] | join(", ")' "$STACK_CATALOG")
+  [[ -n "$ungrouped" ]] && echo "  ⚠ ungrouped (edit the catalog to curate): $ungrouped"
+  missing=$(jq -nr --argjson old "$old" --argjson p "$plugins" --argjson s "$skills" --argjson m "$mcps" '
+    [($p + $s + $m)[] | .id] as $now
+    | [(($old.plugins // []) + ($old.skills // []) + ($old.mcpServers // []))[]
+       | .id | select(. as $i | $now | index($i) | not)] | join(", ")')
+  [[ -n "$missing" ]] && echo "  ⚠ in catalog but not on this machine (kept): $missing"
+  # Flags credentials two ways: "key=..." style embedded in a url/args string,
+  # and credentials passed as a separate argv element right after a flag like
+  # --api-key (no "=" to grep for). Warn-only — never auto-rewrite url/args.
+  suspicious=$(jq -r '[.mcpServers[] | .id as $i
+    | ( ((.config.url // ""), ((.config.args // [])[]))
+        | select(test("(key|token|secret|password)="; "i")) | $i ),
+      ( (.config.args // []) as $a
+        | range(0; ($a | length) - 1) as $ix
+        | select($a[$ix] | test("^(-H|--header|--token|--key|--api-key|--secret|--password)$"))
+        | $i )
+    ] | unique | join(", ")' "$STACK_CATALOG")
+  [[ -n "$suspicious" ]] && echo "  ⚠ possible inline credential in url/args of: $suspicious — review before committing"
+  return 0
+}
+
+# ─── Stack Picker ─────────────────────────────────────────────────────────────
+# Grouped selection: one [a]ll/[n]one/[p]ick prompt per non-empty catalog
+# group, "ungrouped" offered last. Fills the STACK_SEL_* globals; sync_stack
+# writes them into the target. All read -p calls consume stdin (tests pipe
+# scripted answers) — jq output is loaded via mapfile first so loops never
+# steal the prompts' stdin.
+STACK_SEL_PLUGINS=()
+STACK_SEL_SKILLS=()
+STACK_SEL_MCPS=()
+STACK_SEL_GROUPS=()
+
+stack_add() {  # $1 = kind (plugin|skill|mcp), $2 = id
+  case "$1" in
+    plugin) STACK_SEL_PLUGINS+=("$2") ;;
+    skill)  STACK_SEL_SKILLS+=("$2") ;;
+    mcp)    STACK_SEL_MCPS+=("$2") ;;
+  esac
+}
+
+pick_stack() {
+  if [[ ! -f "$STACK_CATALOG" ]]; then
+    echo "  ↷ no stack catalog ($STACK_CATALOG) — skipping stack selection"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  ⚠ jq unavailable — skipping stack selection"
+    return 0
+  fi
+
+  echo ""
+  echo "Select the tooling stack for this project (plugins / skills / MCP servers):"
+
+  local group_lines item_lines gline line gid gname gdesc count anp kind id desc yn picked
+  mapfile -t group_lines < <(jq -r '
+    ((.groups // []) + [{id: "ungrouped", name: "Ungrouped (needs curation)", description: ""}])[]
+    | [.id, .name, .description] | @tsv' "$STACK_CATALOG")
+
+  for gline in "${group_lines[@]}"; do
+    IFS=$'\t' read -r gid gname gdesc <<< "$gline"
+    mapfile -t item_lines < <(jq -r --arg g "$gid" '
+      ((.plugins    // [])[] | select(.group == $g) | ["plugin", .id, .description]),
+      ((.skills     // [])[] | select(.group == $g) | ["skill",  .id, .description]),
+      ((.mcpServers // [])[] | select(.group == $g) | ["mcp",    .id, .description])
+      | @tsv' "$STACK_CATALOG")
+    (( ${#item_lines[@]} > 0 )) || continue
+    count=${#item_lines[@]}
+    echo ""
+    echo "  ── $gname${gdesc:+ — $gdesc} ($count items)"
+    # `|| anp=n`: EOF (Ctrl-D, or a piped answer script running dry) means
+    # "none" — never let a read failure kill the run under set -e.
+    read -p "     [a]ll / [n]one / [p]ick: " anp || anp="n"
+    case "$anp" in
+      a|A)
+        for line in "${item_lines[@]}"; do
+          IFS=$'\t' read -r kind id desc <<< "$line"
+          stack_add "$kind" "$id"
+        done
+        STACK_SEL_GROUPS+=("$gid")
+        echo "     ✓ all $count added"
+        ;;
+      p|P)
+        picked=0
+        for line in "${item_lines[@]}"; do
+          IFS=$'\t' read -r kind id desc <<< "$line"
+          read -p "       Include [$kind] $id${desc:+ — $desc}? (y/n): " yn || yn="n"
+          if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
+            stack_add "$kind" "$id"
+            picked=$((picked + 1))
+          fi
+        done
+        (( picked > 0 )) && STACK_SEL_GROUPS+=("$gid")
+        echo "     ✓ $picked of $count added"
+        ;;
+      *) echo "     ↷ skipped" ;;
+    esac
+  done
+
+  # Connectors are account-bound (claude.ai settings) — recommend, never prompt.
+  if (( ${#STACK_SEL_PLUGINS[@]} + ${#STACK_SEL_SKILLS[@]} + ${#STACK_SEL_MCPS[@]} > 0 )); then
+    local selg='[]' notes
+    (( ${#STACK_SEL_GROUPS[@]} > 0 )) \
+      && selg=$(printf '%s\n' "${STACK_SEL_GROUPS[@]}" | jq -R . | jq -s .)
+    notes=$(jq -r --argjson sel "$selg" '
+      [(.connectors // [])[]
+       | select((.group == null) or (.group as $g | $sel | index($g)))
+       | "       - \(.id): \(.note // "enable in claude.ai account settings")"]
+      | join("\n")' "$STACK_CATALOG")
+    if [[ -n "$notes" ]]; then
+      echo ""
+      echo "     ℹ claude.ai connectors that pair with this selection (account-level — not project-configurable):"
+      echo "$notes"
+    fi
+  fi
+}
+
+# ─── Stack Distribution ───────────────────────────────────────────────────────
+# Writes the picker's selection into the target as declarative config Claude
+# Code natively installs from: enabledPlugins + extraKnownMarketplaces into
+# .claude/settings.json (additive), MCP servers into .mcp.json (additive),
+# vendored skill bodies into .claude/skills/. No installs are scripted —
+# opening Claude Code in the project triggers its own trust/install prompts.
+sync_stack() {
+  if (( ${#STACK_SEL_PLUGINS[@]} + ${#STACK_SEL_SKILLS[@]} + ${#STACK_SEL_MCPS[@]} == 0 )); then
+    echo "    ↷ no stack items selected"
+    return 0
+  fi
+
+  # 1. Plugins → .claude/settings.json (project-level ARRAY format).
+  if (( ${#STACK_SEL_PLUGINS[@]} > 0 )); then
+    local tgt="$TARGET_DIR/.claude/settings.json" sel mkts
+    sel=$(printf '%s\n' "${STACK_SEL_PLUGINS[@]}" | jq -R . | jq -s .)
+    mkts=$(jq --argjson sel "$sel" \
+      '($sel | map(split("@")[1]) | unique) as $names
+       | (.marketplaces // {}) | with_entries(select(.key as $k | $names | index($k)))' \
+      "$STACK_CATALOG")
+    mkdir -p "$TARGET_DIR/.claude"
+    if [[ ! -f "$tgt" ]]; then
+      jq -n --argjson sel "$sel" --argjson m "$mkts" \
+        '{enabledPlugins: ($sel | unique), extraKnownMarketplaces: $m}' > "$tgt"
+      echo "    ✓ settings.json created (${#STACK_SEL_PLUGINS[@]} plugin(s))"
+    elif ! jq -e . "$tgt" >/dev/null 2>&1; then
+      echo "    ⚠ settings.json is not valid JSON — add enabledPlugins manually"
+    elif [[ "$(jq -r '.enabledPlugins | type' "$tgt")" == "object" ]]; then
+      echo "    ⚠ settings.json has object-shaped enabledPlugins (user-level format) — not rewriting; add plugins manually"
+    else
+      if jq --argjson sel "$sel" --argjson m "$mkts" \
+           '.enabledPlugins = ((.enabledPlugins // []) + $sel | unique)
+            | .extraKnownMarketplaces = ($m + (.extraKnownMarketplaces // {}))' \
+           "$tgt" > "$tgt.tmp.$$" && mv "$tgt.tmp.$$" "$tgt"; then
+        echo "    ✓ settings.json: ${#STACK_SEL_PLUGINS[@]} plugin(s) merged additively (existing entries preserved)"
+      else
+        rm -f "$tgt.tmp.$$"
+        echo "    ⚠ plugin merge failed — settings.json left unchanged"
+      fi
+    fi
+  fi
+
+  # 2. MCP servers → .mcp.json (existing keys always win).
+  if (( ${#STACK_SEL_MCPS[@]} > 0 )); then
+    local mcpf="$TARGET_DIR/.mcp.json" selm cfgs refs
+    selm=$(printf '%s\n' "${STACK_SEL_MCPS[@]}" | jq -R . | jq -s .)
+    cfgs=$(jq --argjson sel "$selm" \
+      '[(.mcpServers // [])[] | select(.id as $i | $sel | index($i))]
+       | map({key: .id, value: .config}) | from_entries' "$STACK_CATALOG")
+    if [[ ! -f "$mcpf" ]]; then
+      jq -n --argjson c "$cfgs" '{mcpServers: $c}' > "$mcpf"
+      echo "    ✓ .mcp.json created (${#STACK_SEL_MCPS[@]} server(s))"
+    elif ! jq -e . "$mcpf" >/dev/null 2>&1; then
+      echo "    ⚠ .mcp.json is not valid JSON — add servers manually"
+    else
+      if jq --argjson c "$cfgs" '.mcpServers = ($c + (.mcpServers // {}))' \
+           "$mcpf" > "$mcpf.tmp.$$" && mv "$mcpf.tmp.$$" "$mcpf"; then
+        echo "    ✓ .mcp.json: server(s) merged (existing entries preserved)"
+      else
+        rm -f "$mcpf.tmp.$$"
+        echo "    ⚠ .mcp.json merge failed — left unchanged"
+      fi
+    fi
+    refs=$(jq -nr --argjson c "$cfgs" \
+      '[$c | .. | strings | scan("\\$\\{[A-Z0-9_]+\\}")] | unique | join(", ")')
+    [[ -n "$refs" ]] && echo "    ℹ set these env vars for the MCP server(s): $refs"
+  fi
+
+  # 3. Skills → .claude/skills/ (vendored bodies, template-owned).
+  if (( ${#STACK_SEL_SKILLS[@]} > 0 )); then
+    mkdir -p "$TARGET_DIR/.claude/skills"
+    local s scount=0
+    for s in "${STACK_SEL_SKILLS[@]}"; do
+      if [[ -d "$STACK_SKILLS_DIR/$s" ]]; then
+        rm -rf "$TARGET_DIR/.claude/skills/$s"
+        cp -rL "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
+        scount=$((scount + 1))
+      else
+        echo "    ⚠ skill '$s' not found in $STACK_SKILLS_DIR — skipped"
+      fi
+    done
+    echo "    → $scount skill(s) vendored into .claude/skills/"
+  fi
+  return 0
+}
+
+# ─── Sync Skills ──────────────────────────────────────────────────────────────
+# Mirror of sync_agent_bodies for vendored skills: refresh the bodies of
+# skills the project already has from templates/skills/; a skill with no
+# template source is project-local and never touched. Never adds skills —
+# re-run the full init picker to add stack items.
+collect_installed_skills() {
+  INSTALLED_SKILLS=()
+  local d
+  if [[ -d "$TARGET_DIR/.claude/skills" ]]; then
+    for d in "$TARGET_DIR/.claude/skills"/*/; do
+      [[ -d "$d" ]] || continue
+      INSTALLED_SKILLS+=("$(basename "$d")")
+    done
+  fi
+}
+
+sync_skill_bodies() {
+  collect_installed_skills
+  if (( ${#INSTALLED_SKILLS[@]} == 0 )); then
+    echo "    ↷ no project skills to refresh"
+    return 0
+  fi
+  local s count=0
+  for s in "${INSTALLED_SKILLS[@]}"; do
+    if [[ -d "$STACK_SKILLS_DIR/$s" ]]; then
+      rm -rf "$TARGET_DIR/.claude/skills/$s"
+      cp -rL "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
+      echo "    ✓ Synced skill: $s"
+      count=$((count + 1))
+    else
+      echo "    ⚠ $s has no template source — left as-is (project-local skill)"
+    fi
+  done
+  echo "    → $count skill(s) refreshed from template"
+}
+
 # ─── Changelog Seeding ────────────────────────────────────────────────────────
 # Deterministic layer for public-facing changelogs. Seeds an empty Keep a
 # Changelog scaffold at the repo root and in every detected sub-project, and
@@ -515,6 +918,11 @@ update_readme_agents_table() {
 
 # ─── Upgrade Mode ─────────────────────────────────────────────────────────────
 
+if [[ "$1" == "--capture" ]]; then
+  capture_stack
+  exit 0
+fi
+
 if [[ "$1" == "--update-readme" ]]; then
   update_readme_agents_table
   exit 0
@@ -572,6 +980,9 @@ if [[ "$1" == "--sync" ]]; then
   echo "  Syncing agent definitions..."
   sync_agent_bodies
   echo ""
+  echo "  Syncing vendored skills..."
+  sync_skill_bodies
+  echo ""
   echo "  Syncing commands..."
   sync_commands
   echo ""
@@ -585,7 +996,7 @@ if [[ "$1" == "--sync" ]]; then
   echo "  Seeding changelogs (root + sub-projects)..."
   seed_changelogs "$TARGET_DIR"
   echo ""
-  echo "✓ Sync complete — agent bodies, commands, autonomy layer, CLAUDE.md, and changelogs are current."
+  echo "✓ Sync complete — agent bodies, skills, commands, autonomy layer, CLAUDE.md, and changelogs are current."
   echo "  Knowledge base and custom CLAUDE.md content untouched; existing changelog entries were preserved (an [Unreleased] section was added only where missing)."
   exit 0
 fi
@@ -625,6 +1036,10 @@ done
 
 echo ""
 
+# ─── Stack Selection ──────────────────────────────────────────────────────────
+
+pick_stack
+
 # ─── Create Directory Structure ───────────────────────────────────────────────
 
 echo "Creating .claude/ structure..."
@@ -652,6 +1067,12 @@ sync_commands
 echo ""
 echo "Installing autonomy layer (statusline + guard hooks + autopilot)..."
 sync_autonomy
+
+# ─── Stack Distribution ───────────────────────────────────────────────────────
+
+echo ""
+echo "Writing tooling stack (plugins / MCP servers / skills)..."
+sync_stack
 
 # ─── Initialize Knowledge Base ────────────────────────────────────────────────
 
@@ -708,8 +1129,10 @@ for agent in "${SELECTED_AGENTS[@]}"; do
   echo "  - ${agent%.md}"
 done
 echo ""
+echo "Stack installed: ${#STACK_SEL_PLUGINS[@]} plugin(s), ${#STACK_SEL_MCPS[@]} MCP server(s), ${#STACK_SEL_SKILLS[@]} skill(s)"
+echo ""
 echo "Useful commands:"
 echo "  bash init-claude-project.sh --upgrade        — re-merge CLAUDE.md after adding agents"
-echo "  bash init-claude-project.sh --sync           — pull updated agent bodies + commands + CLAUDE.md, and seed changelogs"
+echo "  bash init-claude-project.sh --sync           — pull updated agent bodies + vendored skills + commands + CLAUDE.md, and seed changelogs"
 echo "  bash init-claude-project.sh --update-readme  — rebuild README agents table"
 echo ""
