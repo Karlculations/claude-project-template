@@ -53,7 +53,7 @@ description: A fixture skill for tests.
 # Fixskill body v1
 EOF
   cat > "$u/user-config.json" <<'EOF'
-{"mcpServers": {"fake-server": {"type": "stdio", "command": "npx", "args": ["-y", "fake", "--api-key", "fake-secret-arg"], "env": {"API_KEY": "hunter2-super-secret"}}}}
+{"mcpServers": {"fake-server": {"type": "stdio", "command": "npx", "args": ["-y", "fake"], "env": {"API_KEY": "hunter2-super-secret"}}}}
 EOF
 }
 
@@ -117,14 +117,18 @@ fi
 ok "literal secret appears nowhere in the captured output"
 
 echo "Test 3b: credential passed as a separate argv element (no '=') also warns"
+U3B="$TMP/userdir3b"
+cp -r "$U" "$U3B"
+jq '.mcpServers["fake-server"].args = ["-y", "fake", "--api-key", "fake-secret-arg"]' "$U3B/user-config.json" > "$U3B/user-config.json.tmp" && mv "$U3B/user-config.json.tmp" "$U3B/user-config.json"
 CAP3B="$TMP/capture3b"
 mkdir -p "$CAP3B"
-run_capture "$U" "$CAP3B" "$TMP/cap3b.out" || fail "fresh capture for Test 3b exited non-zero: $(cat "$TMP/cap3b.out")"
+run_capture "$U3B" "$CAP3B" "$TMP/cap3b.out" || fail "fresh capture for Test 3b exited non-zero: $(cat "$TMP/cap3b.out")"
 # fake-secret-arg legitimately appears verbatim in this catalog (args are not
 # redacted — warn-only by design); the warning presence is the assertion.
 # (Not just grepping for "fake-server" — it also shows up in the unrelated
 # "ungrouped" warning on a fresh catalog, which would pass without the fix.)
 assert_contains "$TMP/cap3b.out" "credential in url/args of: fake-server" "warns on credential passed as a separate --api-key argv element"
+assert_jq "$CAT" '.mcpServers[0].config.args | length' "2" "shared fixture args unchanged (isolation)"
 
 # ─── 4. Full init writes the selection into the project ───────────────────────
 
