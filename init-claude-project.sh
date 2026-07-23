@@ -633,29 +633,43 @@ sync_stack() {
     return 0
   fi
 
-  # 1. Plugins → .claude/settings.json (project-level ARRAY format).
+  # 1. Plugins → .claude/settings.json. enabledPlugins is a RECORD
+  # ({"name@marketplace": true}) at every settings level — Claude Code rejects
+  # an array ("Expected record, but received array") and then skips the whole
+  # file, silently disabling hooks/statusline too. Existing keys always win,
+  # which also preserves a user's explicit `"x@y": false` disables. An
+  # array-shaped value (written by pre-fix versions of this script) renders
+  # the file invalid, so it is migrated to a record rather than skipped.
   if (( ${#STACK_SEL_PLUGINS[@]} > 0 )); then
-    local tgt="$TARGET_DIR/.claude/settings.json" sel mkts
-    sel=$(printf '%s\n' "${STACK_SEL_PLUGINS[@]}" | jq -R . | jq -s .)
+    local tgt="$TARGET_DIR/.claude/settings.json" sel mkts shape
+    sel=$(printf '%s\n' "${STACK_SEL_PLUGINS[@]}" | jq -R . | jq -s 'map({key: ., value: true}) | from_entries')
     mkts=$(jq --argjson sel "$sel" \
-      '($sel | map(split("@")[1]) | unique) as $names
+      '($sel | keys | map(split("@")[1]) | unique) as $names
        | (.marketplaces // {}) | with_entries(select(.key as $k | $names | index($k)))' \
       "$STACK_CATALOG")
     mkdir -p "$TARGET_DIR/.claude"
     if [[ ! -f "$tgt" ]]; then
       jq -n --argjson sel "$sel" --argjson m "$mkts" \
-        '{enabledPlugins: ($sel | unique), extraKnownMarketplaces: $m}' > "$tgt"
+        '{enabledPlugins: $sel, extraKnownMarketplaces: $m}' > "$tgt"
       echo "    ✓ settings.json created (${#STACK_SEL_PLUGINS[@]} plugin(s))"
     elif ! jq -e . "$tgt" >/dev/null 2>&1; then
       echo "    ⚠ settings.json is not valid JSON — add enabledPlugins manually"
-    elif [[ "$(jq -r '.enabledPlugins | type' "$tgt")" == "object" ]]; then
-      echo "    ⚠ settings.json has object-shaped enabledPlugins (user-level format) — not rewriting; add plugins manually"
     else
-      if jq --argjson sel "$sel" --argjson m "$mkts" \
-           '.enabledPlugins = ((.enabledPlugins // []) + $sel | unique)
+      shape=$(jq -r '.enabledPlugins | type' "$tgt")
+      if [[ "$shape" != "object" && "$shape" != "array" && "$shape" != "null" ]]; then
+        echo "    ⚠ settings.json has $shape-shaped enabledPlugins — not rewriting; add plugins manually"
+      elif jq --argjson sel "$sel" --argjson m "$mkts" \
+           '(.enabledPlugins // {}) as $cur
+            | .enabledPlugins = ($sel + (if ($cur | type) == "array"
+                                         then ($cur | map({key: ., value: true}) | from_entries)
+                                         else $cur end))
             | .extraKnownMarketplaces = ($m + (.extraKnownMarketplaces // {}))' \
            "$tgt" > "$tgt.tmp.$$" && mv "$tgt.tmp.$$" "$tgt"; then
-        echo "    ✓ settings.json: ${#STACK_SEL_PLUGINS[@]} plugin(s) merged additively (existing entries preserved)"
+        if [[ "$shape" == "array" ]]; then
+          echo "    ✓ settings.json: migrated array-shaped enabledPlugins (invalid) to record format; ${#STACK_SEL_PLUGINS[@]} plugin(s) merged"
+        else
+          echo "    ✓ settings.json: ${#STACK_SEL_PLUGINS[@]} plugin(s) merged additively (existing entries preserved)"
+        fi
       else
         rm -f "$tgt.tmp.$$"
         echo "    ⚠ plugin merge failed — settings.json left unchanged"

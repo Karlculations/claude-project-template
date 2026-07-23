@@ -37,13 +37,15 @@ project wanting a curated subset gets nothing.
 
 | Category | Mechanism | User action on open |
 |---|---|---|
-| Plugins | project `.claude/settings.json`: `enabledPlugins` (array of `"name@marketplace"`) + `extraKnownMarketplaces` (dict keyed by marketplace id, `{"source": {"source": "github", "repo": "owner/repo"}}`) | workspace trust, then prompted install of missing marketplaces/plugins |
+| Plugins | project `.claude/settings.json`: `enabledPlugins` (record: `{"name@marketplace": true}` — CORRECTED 2026-07-23; the array form documented earlier is rejected by Claude Code's validator, which then skips the whole file) + `extraKnownMarketplaces` (dict keyed by marketplace id, `{"source": {"source": "github", "repo": "owner/repo"}}`) | workspace trust, then prompted install of missing marketplaces/plugins |
 | MCP servers | project `.mcp.json` at repo root; `${VAR}` / `${VAR:-default}` expansion in command/args/env/url/headers | per-server approval via `/mcp`; approvals stored in gitignored `settings.local.json` |
 | Skills | project `.claude/skills/<name>/SKILL.md` | none beyond workspace trust — auto-discovered |
 | claude.ai connectors | none — strictly account-scoped | enable manually in claude.ai account settings |
 
-Format quirk: user-level `enabledPlugins` is an **object** (`{"x@y": true}`); project-level is an
-**array**. `--capture` translates (object entries where value is `true` → array members).
+Format (corrected 2026-07-23 after real-world validation): `enabledPlugins` is a **record**
+(`{"x@y": true}`) at EVERY settings level. Claude Code rejects an array with "Expected record,
+but received array" and skips the entire file — hooks and statusLine included. `--capture` still
+filters to entries whose value is `true` when reading the user level.
 
 ## Components
 
@@ -139,7 +141,9 @@ New function, called from full init with the picker's selection. (`--sync` runs 
 skill-body refresh — see §5.) Follows the Distribution Ownership rule:
 
 - **`.claude/settings.json`** (user-owned, additive):
-  - `enabledPlugins`: created as array if missing; selected ids unioned in (`jq 'unique'`);
+  - `enabledPlugins`: created as record if missing; selected ids merged as `{id: true}` keys
+    with existing keys winning (preserves explicit `false` disables); an array-shaped value
+    (pre-fix output, invalid to Claude Code) is migrated to a record;
     existing entries never removed. If the key exists as an object (user copied user-level
     format), abort the plugin merge for that file with a warning — never rewrite user data shape.
   - `extraKnownMarketplaces`: only marketplaces referenced by selected plugins; each key added

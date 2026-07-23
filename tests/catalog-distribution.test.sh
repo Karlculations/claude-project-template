@@ -199,8 +199,8 @@ a" "$TMP/init4.out" || fail "full init exited non-zero: $(cat "$TMP/init4.out")"
 
 SETTINGS="$PROJ/.claude/settings.json"
 assert_file "$SETTINGS" "project settings.json exists"
-assert_jq "$SETTINGS" '.enabledPlugins | type' "array" "enabledPlugins is project-level array format"
-assert_jq "$SETTINGS" '.enabledPlugins | contains(["alpha@market-one","beta@market-one"])' "true" "selected plugins present"
+assert_jq "$SETTINGS" '.enabledPlugins | type' "object" "enabledPlugins is a record (Claude Code rejects arrays)"
+assert_jq "$SETTINGS" '.enabledPlugins["alpha@market-one"] and .enabledPlugins["beta@market-one"]' "true" "selected plugins present as true entries"
 assert_jq "$SETTINGS" '.extraKnownMarketplaces["market-one"].source.repo' "acme/market-one" "marketplace ref carried for selected plugins"
 assert_jq "$SETTINGS" 'has("statusLine")' "true" "autonomy settings not clobbered by stack merge"
 MCPJ="$PROJ/.mcp.json"
@@ -212,7 +212,7 @@ assert_contains "$TMP/init4.out" "MY_RENAMED_KEY" "init output lists env vars th
 echo "Test 4b: additive merges preserve existing project entries"
 PROJ2="$TMP/proj2"
 mkdir -p "$PROJ2/.claude"
-echo '{"enabledPlugins": ["keep-me@existing"], "extraKnownMarketplaces": {"market-one": {"source": {"source": "github", "repo": "user/own-fork"}}}}' > "$PROJ2/.claude/settings.json"
+echo '{"enabledPlugins": {"keep-me@existing": true, "alpha@market-one": false}, "extraKnownMarketplaces": {"market-one": {"source": {"source": "github", "repo": "user/own-fork"}}}}' > "$PROJ2/.claude/settings.json"
 echo '{"mcpServers": {"fake-server": {"command": "user-custom"}}}' > "$PROJ2/.mcp.json"
 run_init "$PROJ2" "proj2
 api
@@ -220,7 +220,8 @@ teststack
 $AGENT_NOES
 a
 a" "$TMP/init4b.out" || fail "init on pre-configured project exited non-zero: $(cat "$TMP/init4b.out")"
-assert_jq "$PROJ2/.claude/settings.json" '.enabledPlugins | contains(["keep-me@existing"])' "true" "pre-existing plugin entry preserved"
+assert_jq "$PROJ2/.claude/settings.json" '.enabledPlugins["keep-me@existing"]' "true" "pre-existing plugin entry preserved"
+assert_jq "$PROJ2/.claude/settings.json" '.enabledPlugins["alpha@market-one"]' "false" "user's explicit false disable wins over selection"
 assert_jq "$PROJ2/.claude/settings.json" '.extraKnownMarketplaces["market-one"].source.repo' "user/own-fork" "existing marketplace key never overwritten"
 assert_jq "$PROJ2/.mcp.json" '.mcpServers["fake-server"].command' "user-custom" "existing MCP server entry never overwritten"
 
@@ -240,8 +241,8 @@ p
 y
 n
 n" "$TMP/init5.out" || fail "drill-in init exited non-zero: $(cat "$TMP/init5.out")"
-assert_jq "$PROJ3/.claude/settings.json" '.enabledPlugins | contains(["alpha@market-one"])' "true" "picked item present"
-assert_jq "$PROJ3/.claude/settings.json" '.enabledPlugins | contains(["ghost@market-one"])' "false" "declined item absent"
+assert_jq "$PROJ3/.claude/settings.json" '.enabledPlugins["alpha@market-one"]' "true" "picked item present"
+assert_jq "$PROJ3/.claude/settings.json" '.enabledPlugins | has("ghost@market-one")' "false" "declined item absent"
 [[ ! -f "$PROJ3/.mcp.json" ]] || fail ".mcp.json written although no MCP selected"
 ok "no .mcp.json when no MCP server selected"
 [[ ! -d "$PROJ3/.claude/skills/fixskill" ]] || fail "skill vendored although group declined"
@@ -250,20 +251,36 @@ assert_contains "$TMP/init5.out" "Notion" "connector recommendation shown for se
 
 # ─── 6. Defensive edges ───────────────────────────────────────────────────────
 
-echo "Test 6: object-shaped enabledPlugins in target → warn, skip, continue"
+echo "Test 6: array-shaped enabledPlugins (pre-fix format) → migrated to record, merged"
 PROJ4="$TMP/proj4"
 mkdir -p "$PROJ4/.claude"
-echo '{"enabledPlugins": {"user-format@somewhere": true}}' > "$PROJ4/.claude/settings.json"
+echo '{"enabledPlugins": ["legacy@somewhere"]}' > "$PROJ4/.claude/settings.json"
 run_init "$PROJ4" "proj4
 api
 teststack
 $AGENT_NOES
 a
-a" "$TMP/init6.out" || fail "init exited non-zero on object-shaped enabledPlugins: $(cat "$TMP/init6.out")"
-assert_contains "$TMP/init6.out" "object-shaped enabledPlugins" "warning printed"
-assert_jq "$PROJ4/.claude/settings.json" '.enabledPlugins | type' "object" "user's object shape untouched"
-assert_file "$PROJ4/.claude/skills/fixskill/SKILL.md" "skills still vendored despite plugin-merge skip"
-assert_file "$PROJ4/.mcp.json" ".mcp.json still written despite plugin-merge skip"
+a" "$TMP/init6.out" || fail "init exited non-zero on array-shaped enabledPlugins: $(cat "$TMP/init6.out")"
+assert_contains "$TMP/init6.out" "migrated array-shaped enabledPlugins" "migration reported"
+assert_jq "$PROJ4/.claude/settings.json" '.enabledPlugins | type' "object" "array migrated to record"
+assert_jq "$PROJ4/.claude/settings.json" '.enabledPlugins["legacy@somewhere"]' "true" "legacy array entry preserved as true"
+assert_jq "$PROJ4/.claude/settings.json" '.enabledPlugins["alpha@market-one"]' "true" "selection merged during migration"
+assert_file "$PROJ4/.claude/skills/fixskill/SKILL.md" "skills still vendored alongside migration"
+assert_file "$PROJ4/.mcp.json" ".mcp.json still written alongside migration"
+
+echo "Test 6d: unrecognizable enabledPlugins shape → warn, skip plugin merge, continue"
+PROJ4D="$TMP/proj4d"
+mkdir -p "$PROJ4D/.claude"
+echo '{"enabledPlugins": "weird"}' > "$PROJ4D/.claude/settings.json"
+run_init "$PROJ4D" "proj4d
+api
+teststack
+$AGENT_NOES
+a
+a" "$TMP/init6d.out" || fail "init exited non-zero on string-shaped enabledPlugins: $(cat "$TMP/init6d.out")"
+assert_contains "$TMP/init6d.out" "string-shaped enabledPlugins" "shape warning printed"
+assert_jq "$PROJ4D/.claude/settings.json" '.enabledPlugins' "weird" "unrecognizable value left untouched"
+assert_file "$PROJ4D/.claude/skills/fixskill/SKILL.md" "skills still vendored despite plugin-merge skip"
 
 echo "Test 6b: malformed target settings.json → warn, run completes"
 PROJ5="$TMP/proj5"
