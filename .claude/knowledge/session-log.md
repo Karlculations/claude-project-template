@@ -11,6 +11,7 @@
 - Shipped: `--capture` (redacting scrape → templates/catalog.json + templates/skills/), grouped a/n/p picker in full init, `sync_stack()` declarative writes, `--sync` skill-body refresh, 63-assertion suite, README/CHANGELOG/components.md/patterns.md docs.
 - Review loops caught + fixed: deleted redaction assertion (T2), fixture state leak (T4), **18/27 skills vendored as broken symlinks → cp -rL** (T6 smoke test), YAML quoted/folded description garbling (T6), headers parity in keep_env_refs (final review). Security-review add-on: pairwise argv credential-flag warn heuristic (Test 3b).
 - Final whole-branch review: 0 Critical / 0 Important, ready-to-merge; accepted-minors documented in .superpowers/sdd/progress.md.
+- Post-ship fix (`a47891b`, verified on brightcat-api): `enabledPlugins` is a RECORD at project level, not an array (docs-research claim was wrong; invalid key = whole settings.json skipped, hooks dead). sync_stack now writes records + migrates array-shaped files. See MISTAKE-009.
 
 ### In Progress / Left Off At
 - Nothing in flight. active-task.md deleted. Local `stack-catalog` branch kept (delete at will).
