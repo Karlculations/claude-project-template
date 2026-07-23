@@ -38,7 +38,7 @@ trap 'rm -rf "$TMP"' EXIT
 # one skill with frontmatter, one MCP server with a secret to redact.
 make_user_fixture() {
   local u="$1"
-  mkdir -p "$u/skills/fixskill" "$u/plugins"
+  mkdir -p "$u/skills/fixskill" "$u/skills/quoted-skill" "$u/skills/folded-skill" "$u/skills-store/linked-skill" "$u/plugins"
   cat > "$u/settings.json" <<'EOF'
 {"enabledPlugins": {"alpha@market-one": true, "beta@market-one": true, "gamma@market-two": false}}
 EOF
@@ -52,6 +52,30 @@ description: A fixture skill for tests.
 ---
 # Fixskill body v1
 EOF
+  cat > "$u/skills/quoted-skill/SKILL.md" <<'EOF'
+---
+name: quoted-skill
+description: 'A quoted description.'
+---
+# Quoted-skill body
+EOF
+  cat > "$u/skills/folded-skill/SKILL.md" <<'EOF'
+---
+name: folded-skill
+description: >-
+  A folded description
+  spanning two lines.
+---
+# Folded-skill body
+EOF
+  cat > "$u/skills-store/linked-skill/SKILL.md" <<'EOF'
+---
+name: linked-skill
+description: A symlinked skill.
+---
+# Linked-skill body
+EOF
+  ln -s ../skills-store/linked-skill "$u/skills/linked-skill"
   cat > "$u/user-config.json" <<'EOF'
 {"mcpServers": {"fake-server": {"type": "stdio", "command": "npx", "args": ["-y", "fake"], "env": {"API_KEY": "hunter2-super-secret"}}}}
 EOF
@@ -78,9 +102,16 @@ assert_jq "$CAT" '[.plugins[].id] | sort | join(",")' "alpha@market-one,beta@mar
 assert_jq "$CAT" '.plugins[0].group' "ungrouped" "new plugins land in group ungrouped"
 assert_jq "$CAT" '.marketplaces["market-one"].source.repo' "acme/market-one" "marketplace source ref kept"
 assert_jq "$CAT" '.marketplaces["market-one"] | has("installLocation")' "false" "machine-local marketplace noise stripped"
-assert_jq "$CAT" '.skills | length' "1" "skill captured"
-assert_jq "$CAT" '.skills[0].description' "A fixture skill for tests." "skill description scraped from SKILL.md frontmatter"
+assert_jq "$CAT" '.skills | length' "4" "skills captured"
+assert_jq "$CAT" '.skills[] | select(.id == "fixskill") | .description' "A fixture skill for tests." "plain scalar description scraped from SKILL.md frontmatter"
+assert_jq "$CAT" '.skills[] | select(.id == "quoted-skill") | .description' "A quoted description." "single-quoted scalar description has surrounding quotes stripped"
+assert_jq "$CAT" '.skills[] | select(.id == "folded-skill") | .description' "A folded description spanning two lines." "folded block scalar description joined into one line"
 assert_file "$CAP/skills/fixskill/SKILL.md" "skill body snapshotted into skills dir"
+[[ -f "$CAP/skills/linked-skill/SKILL.md" && ! -L "$CAP/skills/linked-skill/SKILL.md" ]] || fail "linked-skill/SKILL.md missing or still a symlink"
+[[ ! -L "$CAP/skills/linked-skill" ]] || fail "linked-skill dir itself is a symlink (cp -rL should have dereferenced it)"
+ok "symlinked skill vendored as a real file (cp -rL dereferences)"
+assert_contains "$CAP/skills/linked-skill/SKILL.md" "Linked-skill body" "symlinked skill body content correct"
+assert_jq "$CAT" '.skills[] | select(.id == "linked-skill") | .description' "A symlinked skill." "symlinked skill description captured"
 assert_jq "$CAT" '.groups | length' "9" "default group scaffold seeded on first capture"
 assert_jq "$CAT" '.mcpServers[0].id' "fake-server" "user-scope MCP server captured"
 assert_jq "$CAT" '.mcpServers[0].config.env.API_KEY' '${FAKE_SERVER_API_KEY}' "env value redacted to derived \${SERVERID_KEY} slug on first capture"
@@ -152,7 +183,8 @@ echo "Test 4: full init writes plugins, MCP servers, and skills into the project
 PROJ="$TMP/proj"
 mkdir -p "$PROJ"
 # Group prompts for the current catalog: core-quality has items (alpha, ghost)
-# → 'a'; ungrouped has items (beta, fixskill, fake-server) → 'a'.
+# → 'a'; ungrouped has items (beta, fixskill, quoted-skill, folded-skill,
+# linked-skill, fake-server) → 'a'.
 run_init "$PROJ" "proj
 api
 teststack

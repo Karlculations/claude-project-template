@@ -403,7 +403,17 @@ capture_stack() {
     for d in "$user_dir/skills"/*/; do
       [[ -f "${d}SKILL.md" ]] || continue
       name="$(basename "$d")"
-      desc="$(awk '/^description:/ { sub(/^description:[[:space:]]*/, ""); print; exit }' "${d}SKILL.md")"
+      # Handles plain scalars, single/double-quoted scalars (surrounding
+      # quotes stripped), and folded/literal block scalars (>, >-, |, |-:
+      # following indented lines joined with spaces, stopping at the first
+      # non-indented line or ---).
+      desc="$(awk '
+        /^description:[[:space:]]*[>|]/ { block=1; next }
+        /^description:/ { sub(/^description:[[:space:]]*/, ""); gsub(/^["'"'"']|["'"'"']$/, ""); print; exit }
+        block && /^[[:space:]]+[^[:space:]]/ { sub(/^[[:space:]]+/, ""); out = out (out ? " " : "") $0; next }
+        block { print out; block=0; exit }
+        END { if (block && out) print out }
+      ' "${d}SKILL.md")"
       skills=$(jq --arg id "$name" --arg desc "$desc" \
         '. + [{id: $id, group: "ungrouped", description: $desc}]' <<<"$skills")
       rm -rf "$STACK_SKILLS_DIR/$name"
