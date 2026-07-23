@@ -685,6 +685,42 @@ sync_stack() {
   return 0
 }
 
+# ─── Sync Skills ──────────────────────────────────────────────────────────────
+# Mirror of sync_agent_bodies for vendored skills: refresh the bodies of
+# skills the project already has from templates/skills/; a skill with no
+# template source is project-local and never touched. Never adds skills —
+# re-run the full init picker to add stack items.
+collect_installed_skills() {
+  INSTALLED_SKILLS=()
+  local d
+  if [[ -d "$TARGET_DIR/.claude/skills" ]]; then
+    for d in "$TARGET_DIR/.claude/skills"/*/; do
+      [[ -d "$d" ]] || continue
+      INSTALLED_SKILLS+=("$(basename "$d")")
+    done
+  fi
+}
+
+sync_skill_bodies() {
+  collect_installed_skills
+  if (( ${#INSTALLED_SKILLS[@]} == 0 )); then
+    echo "    ↷ no project skills to refresh"
+    return 0
+  fi
+  local s count=0
+  for s in "${INSTALLED_SKILLS[@]}"; do
+    if [[ -d "$STACK_SKILLS_DIR/$s" ]]; then
+      rm -rf "$TARGET_DIR/.claude/skills/$s"
+      cp -r "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
+      echo "    ✓ Synced skill: $s"
+      count=$((count + 1))
+    else
+      echo "    ⚠ $s has no template source — left as-is (project-local skill)"
+    fi
+  done
+  echo "    → $count skill(s) refreshed from template"
+}
+
 # ─── Changelog Seeding ────────────────────────────────────────────────────────
 # Deterministic layer for public-facing changelogs. Seeds an empty Keep a
 # Changelog scaffold at the repo root and in every detected sub-project, and
@@ -922,6 +958,9 @@ if [[ "$1" == "--sync" ]]; then
   echo "  Syncing agent definitions..."
   sync_agent_bodies
   echo ""
+  echo "  Syncing vendored skills..."
+  sync_skill_bodies
+  echo ""
   echo "  Syncing commands..."
   sync_commands
   echo ""
@@ -935,7 +974,7 @@ if [[ "$1" == "--sync" ]]; then
   echo "  Seeding changelogs (root + sub-projects)..."
   seed_changelogs "$TARGET_DIR"
   echo ""
-  echo "✓ Sync complete — agent bodies, commands, autonomy layer, CLAUDE.md, and changelogs are current."
+  echo "✓ Sync complete — agent bodies, skills, commands, autonomy layer, CLAUDE.md, and changelogs are current."
   echo "  Knowledge base and custom CLAUDE.md content untouched; existing changelog entries were preserved (an [Unreleased] section was added only where missing)."
   exit 0
 fi

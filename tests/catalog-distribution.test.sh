@@ -271,5 +271,31 @@ diff <(jq -S . "$TMP/mcp.before") <(jq -S . "$PROJ/.mcp.json") >/dev/null \
   || fail ".mcp.json changed on identical re-run"
 ok ".mcp.json unchanged on identical re-run"
 
+# ─── 8. --sync refreshes vendored skill bodies ───────────────────────────
+
+echo "Test 8: --sync refreshes template-sourced skills, leaves the rest alone"
+# Simulate a template update: bump the snapshot body.
+echo "# Fixskill body v2" >> "$CAP/skills/fixskill/SKILL.md"
+# A project-local skill with no template source must never be touched.
+mkdir -p "$PROJ/.claude/skills/localskill"
+printf -- '---\nname: localskill\ndescription: Project-local.\n---\n' > "$PROJ/.claude/skills/localskill/SKILL.md"
+cp "$PROJ/.claude/settings.json" "$TMP/settings.presync"
+cp "$PROJ/.mcp.json" "$TMP/mcp.presync"
+
+( cd "$PROJ" && CLAUDE_STACK_CATALOG="$CAT" CLAUDE_STACK_SKILLS_DIR="$CAP/skills" \
+    bash "$INIT" --sync > "$TMP/sync8.out" 2>&1 ) || fail "--sync exited non-zero: $(cat "$TMP/sync8.out")"
+
+assert_contains "$PROJ/.claude/skills/fixskill/SKILL.md" "Fixskill body v2" "vendored skill body refreshed from template"
+assert_contains "$PROJ/.claude/skills/localskill/SKILL.md" "Project-local." "project-local skill untouched"
+assert_contains "$TMP/sync8.out" "localskill" "project-local skill reported as left as-is"
+diff <(jq -S . "$TMP/settings.presync") <(jq -S . "$PROJ/.claude/settings.json") >/dev/null \
+  || fail "--sync modified settings.json (must not touch plugins)"
+ok "--sync left settings.json untouched"
+diff <(jq -S . "$TMP/mcp.presync") <(jq -S . "$PROJ/.mcp.json") >/dev/null \
+  || fail "--sync modified .mcp.json"
+ok "--sync left .mcp.json untouched"
+[[ ! -d "$PROJ/.claude/skills/ghostskill" ]] || fail "--sync added a skill the project never selected"
+ok "--sync added no new skills"
+
 echo ""
 echo "PASS — $PASS_COUNT assertions"
