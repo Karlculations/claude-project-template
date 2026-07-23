@@ -4,6 +4,56 @@
 
 ---
 
+## Session: 2026-07-22/23 — Stack catalog: subagent-driven execution, merged to main
+
+### Completed
+- All 6 plan tasks executed via subagent-driven development (fresh implementer + reviewer per task, fix/re-review loops). Branch `stack-catalog` (11 commits) merged to `main` as `85f8c40` (--no-ff). Post-merge suites: catalog 63, autonomy 78, changelog 37 — all green. NOT pushed (Karl pushes).
+- Shipped: `--capture` (redacting scrape → templates/catalog.json + templates/skills/), grouped a/n/p picker in full init, `sync_stack()` declarative writes, `--sync` skill-body refresh, 63-assertion suite, README/CHANGELOG/components.md/patterns.md docs.
+- Review loops caught + fixed: deleted redaction assertion (T2), fixture state leak (T4), **18/27 skills vendored as broken symlinks → cp -rL** (T6 smoke test), YAML quoted/folded description garbling (T6), headers parity in keep_env_refs (final review). Security-review add-on: pairwise argv credential-flag warn heuristic (Test 3b).
+- Final whole-branch review: 0 Critical / 0 Important, ready-to-merge; accepted-minors documented in .superpowers/sdd/progress.md.
+
+### In Progress / Left Off At
+- Nothing in flight. active-task.md deleted. Local `stack-catalog` branch kept (delete at will).
+
+### Key Decisions Made
+- Scrape-bug repairs need curated-field blanking before re-capture (curation-preservation keeps old non-empty descriptions — by design).
+- Vendored-skill supply chain: review `git diff templates/skills/` on every re-capture; provenance manifest recommended but NOT implemented (Karl's call).
+
+### Watch Out For (Next Session)
+- Karl follow-ups pending: push main; optional provenance manifest; delete `~/.claude/skills/cloudflare/references/r2-sql/SKILL.md.backup` + re-capture; awk block-scalar blank-line truncation (multi-paragraph descriptions) is a known accepted edge.
+- `templates/skills/` is real third-party content (475 files incl. shell scripts) — trust surface for downstream projects.
+
+---
+
+## Session: 2026-07-22 — Stack catalog: design + spec + implementation plan (no code yet)
+
+### Completed
+- **Design + spec approved** (`docs/superpowers/specs/2026-07-22-stack-catalog-design.md`): checked-in catalog (`templates/catalog.json`) + `--capture` scrape mode; grouped `[a]/[n]/[p]` picker at init; writes are declarative only — `enabledPlugins`+`extraKnownMarketplaces` into project `.claude/settings.json` (ARRAY format; user-level is object — capture translates), `.mcp.json` (additive), vendored skills into `.claude/skills/`.
+- **Implementation plan written** (`docs/superpowers/plans/2026-07-22-stack-catalog.md`): 6 TDD tasks with complete code (capture+redaction → refresh semantics → sync_stack+picker → drill-in/edges/idempotency → --sync skill refresh → real capture+curation+docs). New suite: `tests/catalog-distribution.test.sh`. Branch: `stack-catalog` (plan step 0 commits the spec).
+- Verified via docs agent: project settings CAN carry enabledPlugins/extraKnownMarketplaces (Claude Code prompts install); `.mcp.json` supports `${VAR}` expansion; skills auto-load from `.claude/skills/`; **claude.ai connectors are account-bound — not project-configurable** (catalog carries them as doc-only "recommended" list).
+- Machine inventory: 3 marketplaces, 31 plugins (30 enabled), 27 personal skills, 1 user MCP (`magic`, has real API key in env — redaction is mandatory).
+
+### In Progress / Left Off At
+- Plan saved; execution NOT started. Waiting on user's choice: subagent-driven vs inline execution.
+- Spec + plan are uncommitted on `main` (working tree otherwise clean; plan's Task 1 Step 0 creates the branch + commits the spec).
+
+### Blockers
+- User input needed: execution approach (subagent-driven recommended vs inline).
+
+### Key Decisions Made
+- Three distribution verbs: plugins REFERENCED (settings keys), MCPs DECLARED (.mcp.json), skills VENDORED (copied; no reference mechanism exists).
+- No scripted `claude plugin install` — rely on Claude Code's native trust/install prompts.
+- `--sync` refreshes vendored skill bodies only; never touches plugin/MCP config (doesn't go stale).
+- **Redaction hard rule**: captured MCP env/header values → `${SERVERID_KEY}` placeholders; dedicated test; nothing real ever committed.
+- Test seams: `CLAUDE_USER_DIR`, `CLAUDE_USER_CONFIG`, `CLAUDE_STACK_CATALOG`, `CLAUDE_STACK_SKILLS_DIR`.
+
+### Watch Out For (Next Session)
+- Plan self-review already fixed: --sync refuses zero-agent projects (Test 8 needs `AGENT_ONE_YES`), picker reads need `|| var=n` EOF tolerance under `set -e`, changelog suite is `tests/changelog-sync.test.sh`.
+- Existing suites only drive `--sync` (never interactive init) — shipping the real catalog won't starve their stdin; keep it that way.
+- components.md/patterns.md deliberately NOT updated — nothing built yet; plan Task 6 updates them at implementation time.
+
+---
+
 ## Session: 2026-07-21 (later) — Auto-resume layer: autopilot handoff, active-task marker, additive settings merge
 
 ### Completed
