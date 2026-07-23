@@ -489,9 +489,17 @@ capture_stack() {
     | [(($old.plugins // []) + ($old.skills // []) + ($old.mcpServers // []))[]
        | .id | select(. as $i | $now | index($i) | not)] | join(", ")')
   [[ -n "$missing" ]] && echo "  ⚠ in catalog but not on this machine (kept): $missing"
+  # Flags credentials two ways: "key=..." style embedded in a url/args string,
+  # and credentials passed as a separate argv element right after a flag like
+  # --api-key (no "=" to grep for). Warn-only — never auto-rewrite url/args.
   suspicious=$(jq -r '[.mcpServers[] | .id as $i
-    | ((.config.url // ""), ((.config.args // [])[]))
-    | select(test("(key|token|secret|password)="; "i")) | $i] | unique | join(", ")' "$STACK_CATALOG")
+    | ( ((.config.url // ""), ((.config.args // [])[]))
+        | select(test("(key|token|secret|password)="; "i")) | $i ),
+      ( (.config.args // []) as $a
+        | range(0; ($a | length) - 1) as $ix
+        | select($a[$ix] | test("^(-H|--header|--token|--key|--api-key|--secret|--password)$"))
+        | $i )
+    ] | unique | join(", ")' "$STACK_CATALOG")
   [[ -n "$suspicious" ]] && echo "  ⚠ possible inline credential in url/args of: $suspicious — review before committing"
   return 0
 }

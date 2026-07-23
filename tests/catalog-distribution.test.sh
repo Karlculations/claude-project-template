@@ -53,7 +53,7 @@ description: A fixture skill for tests.
 # Fixskill body v1
 EOF
   cat > "$u/user-config.json" <<'EOF'
-{"mcpServers": {"fake-server": {"type": "stdio", "command": "npx", "args": ["-y", "fake"], "env": {"API_KEY": "hunter2-super-secret"}}}}
+{"mcpServers": {"fake-server": {"type": "stdio", "command": "npx", "args": ["-y", "fake", "--api-key", "fake-secret-arg"], "env": {"API_KEY": "hunter2-super-secret"}}}}
 EOF
 }
 
@@ -116,6 +116,16 @@ if grep -r "hunter2" "$CAP" >/dev/null 2>&1; then
 fi
 ok "literal secret appears nowhere in the captured output"
 
+echo "Test 3b: credential passed as a separate argv element (no '=') also warns"
+CAP3B="$TMP/capture3b"
+mkdir -p "$CAP3B"
+run_capture "$U" "$CAP3B" "$TMP/cap3b.out" || fail "fresh capture for Test 3b exited non-zero: $(cat "$TMP/cap3b.out")"
+# fake-secret-arg legitimately appears verbatim in this catalog (args are not
+# redacted — warn-only by design); the warning presence is the assertion.
+# (Not just grepping for "fake-server" — it also shows up in the unrelated
+# "ungrouped" warning on a fresh catalog, which would pass without the fix.)
+assert_contains "$TMP/cap3b.out" "credential in url/args of: fake-server" "warns on credential passed as a separate --api-key argv element"
+
 # ─── 4. Full init writes the selection into the project ───────────────────────
 
 # The full-init flow prompts: name, type, stack, one y/n per registry agent,
@@ -172,6 +182,90 @@ a" "$TMP/init4b.out" || fail "init on pre-configured project exited non-zero: $(
 assert_jq "$PROJ2/.claude/settings.json" '.enabledPlugins | contains(["keep-me@existing"])' "true" "pre-existing plugin entry preserved"
 assert_jq "$PROJ2/.claude/settings.json" '.extraKnownMarketplaces["market-one"].source.repo' "user/own-fork" "existing marketplace key never overwritten"
 assert_jq "$PROJ2/.mcp.json" '.mcpServers["fake-server"].command' "user-custom" "existing MCP server entry never overwritten"
+
+# ─── 5. Per-item drill-in ─────────────────────────────────────────────────────
+
+echo "Test 5: [p]ick selects individual items only"
+PROJ3="$TMP/proj3"
+mkdir -p "$PROJ3"
+# core-quality prompts first (a/n/p → p), items in catalog order within the
+# group: plugins (alpha, ghost) then skills/mcps. Answers: y for alpha, n for
+# ghost; then 'n' for the whole ungrouped group.
+run_init "$PROJ3" "proj3
+api
+teststack
+$AGENT_NOES
+p
+y
+n
+n" "$TMP/init5.out" || fail "drill-in init exited non-zero: $(cat "$TMP/init5.out")"
+assert_jq "$PROJ3/.claude/settings.json" '.enabledPlugins | contains(["alpha@market-one"])' "true" "picked item present"
+assert_jq "$PROJ3/.claude/settings.json" '.enabledPlugins | contains(["ghost@market-one"])' "false" "declined item absent"
+[[ ! -f "$PROJ3/.mcp.json" ]] || fail ".mcp.json written although no MCP selected"
+ok "no .mcp.json when no MCP server selected"
+[[ ! -d "$PROJ3/.claude/skills/fixskill" ]] || fail "skill vendored although group declined"
+ok "no skills vendored when group declined"
+assert_contains "$TMP/init5.out" "Notion" "connector recommendation shown for selection"
+
+# ─── 6. Defensive edges ───────────────────────────────────────────────────────
+
+echo "Test 6: object-shaped enabledPlugins in target → warn, skip, continue"
+PROJ4="$TMP/proj4"
+mkdir -p "$PROJ4/.claude"
+echo '{"enabledPlugins": {"user-format@somewhere": true}}' > "$PROJ4/.claude/settings.json"
+run_init "$PROJ4" "proj4
+api
+teststack
+$AGENT_NOES
+a
+a" "$TMP/init6.out" || fail "init exited non-zero on object-shaped enabledPlugins: $(cat "$TMP/init6.out")"
+assert_contains "$TMP/init6.out" "object-shaped enabledPlugins" "warning printed"
+assert_jq "$PROJ4/.claude/settings.json" '.enabledPlugins | type' "object" "user's object shape untouched"
+assert_file "$PROJ4/.claude/skills/fixskill/SKILL.md" "skills still vendored despite plugin-merge skip"
+assert_file "$PROJ4/.mcp.json" ".mcp.json still written despite plugin-merge skip"
+
+echo "Test 6b: malformed target settings.json → warn, run completes"
+PROJ5="$TMP/proj5"
+mkdir -p "$PROJ5/.claude"
+echo 'this is not json' > "$PROJ5/.claude/settings.json"
+run_init "$PROJ5" "proj5
+api
+teststack
+$AGENT_NOES
+a
+a" "$TMP/init6b.out" || fail "init exited non-zero on malformed settings.json: $(cat "$TMP/init6b.out")"
+assert_contains "$TMP/init6b.out" "not valid JSON" "malformed settings warning printed"
+assert_file "$PROJ5/.claude/skills/fixskill/SKILL.md" "run continued past malformed settings"
+
+echo "Test 6c: absent catalog → picker skipped silently, init completes"
+PROJ6="$TMP/proj6"
+mkdir -p "$PROJ6"
+( cd "$PROJ6" && printf '%s\n' "proj6
+api
+teststack
+$AGENT_NOES" \
+    | CLAUDE_STACK_CATALOG="$TMP/nonexistent-catalog.json" CLAUDE_STACK_SKILLS_DIR="$TMP/nonexistent-skills" \
+      bash "$INIT" > "$TMP/init6c.out" 2>&1 ) || fail "init exited non-zero without a catalog: $(cat "$TMP/init6c.out")"
+assert_contains "$TMP/init6c.out" "no stack catalog" "catalog-less init reports the skip"
+assert_contains "$TMP/init6c.out" "Setup Complete" "catalog-less init completes"
+
+# ─── 7. Idempotency ───────────────────────────────────────────────────────────
+
+echo "Test 7: re-running init with the same answers changes nothing"
+cp "$PROJ/.claude/settings.json" "$TMP/settings.before"
+cp "$PROJ/.mcp.json" "$TMP/mcp.before"
+run_init "$PROJ" "proj
+api
+teststack
+$AGENT_ONE_YES
+a
+a" "$TMP/init7.out" || fail "second init run exited non-zero: $(cat "$TMP/init7.out")"
+diff <(jq -S . "$TMP/settings.before") <(jq -S . "$PROJ/.claude/settings.json") >/dev/null \
+  || fail "settings.json changed on identical re-run"
+ok "settings.json unchanged on identical re-run"
+diff <(jq -S . "$TMP/mcp.before") <(jq -S . "$PROJ/.mcp.json") >/dev/null \
+  || fail ".mcp.json changed on identical re-run"
+ok ".mcp.json unchanged on identical re-run"
 
 echo ""
 echo "PASS — $PASS_COUNT assertions"
