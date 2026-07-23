@@ -173,6 +173,18 @@ Claude Code delegates to agents automatically based on task context, or you can 
 
 ---
 
+### The Tooling Stack — Plugins, Skills, and MCP Servers
+
+Full init also offers a curated catalog of plugins, skills, and MCP servers — the same kind of tooling you already have installed at the user level — grouped and pickable per project instead of installed everywhere.
+
+- **What it installs, and where.** Selected plugins go into `.claude/settings.json` (`enabledPlugins` + `extraKnownMarketplaces`), selected MCP servers into `.mcp.json`, selected skill bodies are vendored into `.claude/skills/`. All three are additive merges — an existing entry is never rewritten or removed.
+- **Nothing is scripted-installed.** The script only writes declarative config. Opening Claude Code in the project afterward triggers its own native trust/install prompts for the plugins and MCP servers you selected.
+- **claude.ai connectors are account-level, not project config.** Things like Notion, Gmail, or Google Calendar can't be wired into a project file — the picker only *recommends* enabling them in your claude.ai account settings when they pair with what you picked.
+- **Curating the catalog.** `templates/catalog.json` ships pre-curated, but it's just JSON — edit any item's `group` (which picker section it appears under) or `description` (the one-liner shown at pick time) directly. Re-running `--capture` preserves your edits: an item already in the catalog keeps its curated `group`/`description`, only newly-discovered items land in `"ungrouped"`.
+- **License note.** Vendored skills under `templates/skills/` are snapshots of locally-installed third-party skills. Check upstream licenses before publishing this template repo publicly.
+
+---
+
 ### Existing File Scan — Context From Day One
 
 When you run the init script on a project that already has files, it scans up to 3 levels deep for:
@@ -237,6 +249,7 @@ The result: a session that saves its own memory before running out of context, r
 | `bash init-claude-project.sh --sync` | Pull template updates into an existing project: refresh agent bodies + commands + autonomy hooks + CLAUDE.md, and seed root + sub-project changelogs (knowledge base untouched; existing changelog content never rewritten; settings.json merged, never clobbered) |
 | `.claude/autopilot.sh "task" [max_turns]` | Unattended runner: works in turns, pauses at the usage threshold, resumes after the window resets |
 | `bash init-claude-project.sh --update-readme` | Rebuild the agents table in README.md from the registry |
+| `bash init-claude-project.sh --capture` | Refresh `templates/catalog.json` + `templates/skills/` from this machine |
 
 ---
 

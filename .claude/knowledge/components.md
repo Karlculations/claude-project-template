@@ -81,4 +81,32 @@ Copies hooks + autopilot into the target (template-owned: always overwritten, ch
 
 ---
 
+## Stack Catalog — capture/picker/distribution
+
+**Type**: Three functions in `init-claude-project.sh` + shipped catalog
+**Location**: `capture_stack()` / `pick_stack()` / `sync_stack()` in `init-claude-project.sh`; data in `templates/catalog.json` + `templates/skills/`
+**Added**: 2026-07-22
+
+**What it does**:
+- `capture_stack()` (`--capture` only, run on the maintainer's own machine) reads this machine's user-level Claude Code config and writes `templates/catalog.json` + vendors `templates/skills/*` bodies: enabled plugins from `~/.claude/settings.json`'s `enabledPlugins`, marketplaces (source ref only) from `~/.claude/plugins/known_marketplaces.json`, MCP servers from `~/.claude.json`, skill catalog entries (description scraped from frontmatter) + bodies from `~/.claude/skills/*`.
+- `pick_stack()` (full init only) prompts per catalog group ([a]ll/[n]one/[p]ick, "ungrouped" last), fills `STACK_SEL_{PLUGINS,SKILLS,MCPS,GROUPS}`, then recommends any claude.ai connectors whose `group` matches a selected group (or ungrouped connectors, always) — connectors are never installed, only printed as a note.
+- `sync_stack()` (full init AND `--sync`) writes the selection into the target: plugins → `.claude/settings.json` (`enabledPlugins` + `extraKnownMarketplaces`, additive), MCP servers → `.mcp.json` (`mcpServers`, existing keys win), skills → vendored copy into `.claude/skills/` (template-owned, always overwritten). No installs are scripted — opening Claude Code in the project triggers its own trust/install prompts.
+
+**Env seams** (all overridable for tests):
+- `CLAUDE_USER_DIR` (default `$HOME/.claude`) — source of `settings.json`, `plugins/known_marketplaces.json`, `skills/`
+- `CLAUDE_USER_CONFIG` (default `$HOME/.claude.json`) — source of `mcpServers`
+- `CLAUDE_STACK_CATALOG` (default `$TEMPLATE_DIR/templates/catalog.json`) — capture target / picker source
+- `CLAUDE_STACK_SKILLS_DIR` (default `$TEMPLATE_DIR/templates/skills`) — vendored skill bodies, capture target / sync source
+
+**Redaction rule**: MCP server `env`/`headers` values are ALWAYS rewritten at capture to `${SERVERID_KEY}` placeholders (never the literal value) — a credential must never reach the repo. A re-capture keeps a hand-renamed `${...}` placeholder already in the catalog over the freshly derived one (same key, both are placeholders — never a literal survives). `capture_stack()` also warn-only flags suspicious inline `key=`/`token=`/`--api-key`-style values in MCP `url`/`args` (never auto-rewritten, since url/args aren't redacted the way env/headers are).
+
+**Additive-merge contracts**: curation (`group`/non-empty `description`) on an existing catalog item survives every re-capture; items no longer on the machine are kept and reported (`⚠ in catalog but not on this machine`), never auto-removed; `sync_stack()`'s writes to `.claude/settings.json`/`.mcp.json` only ever add — an existing `enabledPlugins`/`extraKnownMarketplaces`/`mcpServers` entry in the target project is never rewritten or dropped.
+
+**Test suite**: `tests/catalog-distribution.test.sh`
+
+**Notes / Caveats**:
+- All three skill-copy call sites (`capture_stack()`'s vendor step, `sync_stack()`, `sync_skill_bodies()`) use `cp -rL`, not `cp -r`. Found during Task 6's real capture: a user-level skill dir is frequently itself a symlink (e.g. into a dotfiles/plugin checkout, `~/.claude/skills/x -> ../../.agents/skills/x`). Plain `cp -r` copies the symlink itself, carrying its relative target — which resolves to nothing once relocated into this repo, silently vendoring a broken symlink with zero content. `-L` dereferences and copies the real files. Regression check: `find templates/skills -maxdepth 1 -type l` must always be empty.
+
+---
+
 <!-- Add new components above this line -->

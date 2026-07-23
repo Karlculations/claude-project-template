@@ -407,7 +407,11 @@ capture_stack() {
       skills=$(jq --arg id "$name" --arg desc "$desc" \
         '. + [{id: $id, group: "ungrouped", description: $desc}]' <<<"$skills")
       rm -rf "$STACK_SKILLS_DIR/$name"
-      cp -r "${d%/}" "$STACK_SKILLS_DIR/$name"
+      # -L: dereference. A user-level skill dir is often itself a symlink (e.g.
+      # into a dotfiles checkout); plain `cp -r` would copy the symlink as-is,
+      # carrying its (often relative) target — which resolves to nothing once
+      # relocated into this repo. -L copies the real content instead.
+      cp -rL "${d%/}" "$STACK_SKILLS_DIR/$name"
     done
   fi
 
@@ -674,7 +678,7 @@ sync_stack() {
     for s in "${STACK_SEL_SKILLS[@]}"; do
       if [[ -d "$STACK_SKILLS_DIR/$s" ]]; then
         rm -rf "$TARGET_DIR/.claude/skills/$s"
-        cp -r "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
+        cp -rL "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
         scount=$((scount + 1))
       else
         echo "    ⚠ skill '$s' not found in $STACK_SKILLS_DIR — skipped"
@@ -711,7 +715,7 @@ sync_skill_bodies() {
   for s in "${INSTALLED_SKILLS[@]}"; do
     if [[ -d "$STACK_SKILLS_DIR/$s" ]]; then
       rm -rf "$TARGET_DIR/.claude/skills/$s"
-      cp -r "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
+      cp -rL "$STACK_SKILLS_DIR/$s" "$TARGET_DIR/.claude/skills/$s"
       echo "    ✓ Synced skill: $s"
       count=$((count + 1))
     else
