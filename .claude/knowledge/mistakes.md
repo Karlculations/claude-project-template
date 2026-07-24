@@ -13,6 +13,22 @@ Before starting any work, scan this file for patterns matching your current task
 
 ---
 
+**ID**: MISTAKE-011
+**Severity**: 🔴
+**Date**: 2026-07-24
+**Context**: `resets_at` timestamp parsing in `usage-guard.sh` / `statusline.sh`
+
+**What went wrong**:
+`resets_at` arrives as **epoch seconds** from the live statusline feed (`"resets_at":1784935200`) but as **ISO-8601** from other readings — both were observed within one session. The expiry check used `date -d "$RESET" +%s 2>/dev/null || echo 0`, and GNU `date -d` rejects a bare epoch. So `RESET_EPOCH=0`, the `(( RESET_EPOCH > 0 && ... ))` guard short-circuited, and **the expiry check was silently skipped** for every epoch-format reading — reinstating exactly the fail-CLOSED bug MISTAKE-004 was written to prevent. Verified against the committed version: a stale `pct=96` state with a long-past epoch `resets_at` returned exit 2 and blocked every prompt, forever. Also surfaced as `resets at 1784935200` in `--status` and `→ 1784935200` in the status line.
+
+**What actually worked**:
+Branch on shape before parsing — `[[ "$RESET" =~ ^[0-9]+$ ]]` → use as epoch; else `date -d`. Same fix at both call sites (guard + statusline), plus a separate `RESET_H` human-rendered form (`date -d "@$N"`) for every user-facing message. Tests now cover an expired *epoch* window failing open and both formats rendering as a clock time.
+
+**Pattern to avoid**:
+`|| echo 0` on a parse turns "I could not read this" into a valid-looking value that disables the check downstream — the failure is invisible and points the wrong way (fail-closed) precisely when the sensor is degraded. When a fallback feeds a safety condition, the fallback must be the SAFE value, not a neutral-looking zero. And never assume one wire format for a field just because the first sample you saw had one: probe the live value, in this case a plain `--status` run.
+
+---
+
 **ID**: MISTAKE-010
 **Severity**: 🟡
 **Date**: 2026-07-24

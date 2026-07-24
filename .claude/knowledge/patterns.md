@@ -38,6 +38,25 @@ Missing jq, unreadable state, malformed transcript, curl failure → exit 0 / st
 **Do NOT**:
 Add `set -e` to a hook, or make a guard's error path block anything.
 
+**Corollary (2026-07-24)**: a parse fallback must be the SAFE value, not a neutral-looking one. `date -d "$X" || echo 0` looks harmless, but the 0 then fails a `> 0` guard and disables the expiry check entirely — turning "unreadable timestamp" into "blocks forever" (MISTAKE-011). Wherever a fallback feeds a safety condition, pick the value that fails open.
+
+---
+
+### Guarding an Operation You Cannot Interrupt
+
+**Established**: 2026-07-24
+**Applies to**: `usage-guard.sh`; any hook-based control over fan-out tools
+
+**The Pattern**:
+Hooks fire on main-loop tool calls. A fan-out tool (`Workflow`) spawns its agents through its own runtime, so **no hook fires for them and nothing can halt it once running** — and it returns partial results reporting success when they die. A guard that only checks "am I over the limit right now" is useless against it. Guard the edges instead:
+1. **Before — reserve headroom.** Refuse to *start* it at a *lower* threshold than the work-stop one (`CLAUDE_USAGE_FANOUT_THRESHOLD` 80% vs `CLAUDE_USAGE_THRESHOLD` 95%). The gap is deliberate: between the two, ordinary guarded work continues and only the unguardable call is refused. Say so in the deny reason, and name the guarded alternative (do it inline).
+2. **After — re-measure, forcing freshness.** On its PostToolUse, bypass the state cache (`FETCH_TTL=0`): cached state can be a whole workflow out of date, and this is the first trustworthy reading since before the call. Over threshold → exit 2 so stderr reaches Claude (the tool already ran; nothing to deny), stating that results are PARTIAL.
+
+Prefer re-measuring over parsing the tool's output for "limit" strings — a review workflow legitimately *discusses* rate limits, and the meter is unambiguous.
+
+**Do NOT**:
+Claim the blind spot is closed. The window during the run is irreducible with hooks alone; only entry and exit are controllable.
+
 ---
 
 ### Distribution Ownership Rule

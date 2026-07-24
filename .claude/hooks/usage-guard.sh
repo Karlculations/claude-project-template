@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # usage-guard.sh — pauses the session when the subscription 5-hour window is
-# nearly spent (default >= 95%). Wired as UserPromptSubmit + PreToolUse hooks
-# in .claude/settings.json. Fails OPEN: any internal error, missing data, or
-# EXPIRED data (resets_at already past) lets work continue.
+# nearly spent (default >= 95%). Wired as UserPromptSubmit + PreToolUse +
+# PostToolUse hooks in .claude/settings.json. Fails OPEN: any internal error,
+# missing data, or EXPIRED data (resets_at already past) lets work continue.
+#
+# Three checkpoints, because a fan-out tool (Workflow) is a blind spot: it
+# spawns agents in its own runtime, so no hook fires for them and nothing can
+# halt it mid-run.
+#   before  — refuse to START a fan-out above FANOUT%, reserving headroom to
+#             finish it (ordinary work is untouched until THRESH%)
+#   during  — deny expensive/ordinary tool calls above THRESH%
+#   after   — on a fan-out's PostToolUse, take a FORCE-REFRESHED reading (the
+#             first trustworthy one since before the call) and, over THRESH%,
+#             tell Claude its results are partial and to hand off
 #
 # Data sources, in order:
 #   1. CLAUDE_USAGE_OVERRIDE / CLAUDE_USAGE_RESET_OVERRIDE  (tests / manual)
@@ -14,6 +24,9 @@
 # CLI: --status (human summary) | --json (normalized state for scripts)
 # Env: CLAUDE_AUTONOMY=off        bypass the guard (hook mode only)
 #      CLAUDE_USAGE_THRESHOLD=95  block at this 5h-window percentage
+#      CLAUDE_USAGE_FANOUT_THRESHOLD=80  refuse to START a fan-out (Workflow)
+#                                 above this — it cannot be guarded or halted
+#                                 once running, so it needs reserved headroom
 #      CLAUDE_USAGE_STATE=<path>  state file (default: private per-user dir)
 #      CLAUDE_USAGE_STATE_TTL=600 seconds before cached state is stale
 #      CLAUDE_USAGE_FETCH_BACKOFF=120  seconds to skip the API after a failed
@@ -31,6 +44,7 @@ THRESH="${CLAUDE_USAGE_THRESHOLD:-95}"
 # Env values reach bash arithmetic below — digits only, same rule as the state file.
 TTL="${CLAUDE_USAGE_STATE_TTL:-600}";      [[ "$TTL" =~ ^[0-9]+$ ]] || TTL=600
 BACKOFF="${CLAUDE_USAGE_FETCH_BACKOFF:-120}"; [[ "$BACKOFF" =~ ^[0-9]+$ ]] || BACKOFF=120
+FANOUT="${CLAUDE_USAGE_FANOUT_THRESHOLD:-80}"; [[ "$FANOUT" =~ ^[0-9]+$ ]] || FANOUT=80
 MODE="hook"; case "${1:-}" in --status) MODE=status;; --json) MODE=json;; esac
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -46,6 +60,20 @@ fi
 if [[ "$MODE" == "hook" && "${CLAUDE_AUTONOMY:-on}" == "off" ]]; then
   cat >/dev/null   # bypass before any state work — no fetch, no latency
   exit 0
+fi
+
+# Read the payload BEFORE touching state — the event decides how fresh the
+# reading has to be. (Only in hook mode: --status from a terminal must not
+# block on stdin.)
+INPUT=""; EVENT=""; TOOL=""; FETCH_TTL="$TTL"
+if [[ "$MODE" == "hook" ]]; then
+  INPUT=$(cat 2>/dev/null || true)
+  EVENT=$(jq -r '.hook_event_name // empty' <<<"$INPUT" 2>/dev/null || true)
+  TOOL=$(jq -r '.tool_name // empty' <<<"$INPUT" 2>/dev/null || true)
+  # A fan-out tool has just finished spawning agents through its OWN runtime —
+  # no hook fired for any of them, so cached state can be a whole workflow out
+  # of date. This is the first moment a reading is meaningful: force a fresh one.
+  [[ "$EVENT" == "PostToolUse" ]] && FETCH_TTL=0
 fi
 
 younger_than() {   # $1 = file, $2 = max age in seconds
@@ -87,7 +115,7 @@ get_state() {
         seven_day: {pct: null, resets_at: null}}'
     return
   fi
-  if younger_than "$STATE" "$TTL"; then cat "$STATE" 2>/dev/null && return; fi
+  if younger_than "$STATE" "$FETCH_TTL"; then cat "$STATE" 2>/dev/null && return; fi
   local s
   # Back off after a failed fetch: this runs on every guarded call (Bash
   # included), and a 6s curl timeout per call would stall the whole session.
@@ -119,13 +147,29 @@ PCT=${PCT%.*}
 # work forever. ponytail: GNU date; on BSD the check is skipped, guards keep
 # the old reading until the sensor refreshes.
 NOW=$(date +%s)
+# resets_at arrives as epoch seconds from some sources and ISO-8601 from
+# others. `date -d` parses only the latter, and a timestamp it cannot read
+# silently becomes 0 — which SKIPS the expiry check and hands back exactly the
+# fail-CLOSED bug it exists to prevent (MISTAKE-004). Handle both forms.
+RESET_EPOCH=0
 if [[ -n "$RESET" ]]; then
-  RESET_EPOCH=$(date -d "$RESET" +%s 2>/dev/null || echo 0)
+  if [[ "$RESET" =~ ^[0-9]+$ ]]; then
+    RESET_EPOCH="$RESET"
+  else
+    RESET_EPOCH=$(date -d "$RESET" +%s 2>/dev/null || echo 0)
+    [[ "$RESET_EPOCH" =~ ^[0-9]+$ ]] || RESET_EPOCH=0
+  fi
   if (( RESET_EPOCH > 0 && RESET_EPOCH <= NOW )); then
     STATE_JSON=$(jq -c '.five_hour.pct = null | .five_hour.resets_at = null | .expired = true' \
       <<<"$STATE_JSON" 2>/dev/null || echo '{}')
-    PCT=""; RESET=""
+    PCT=""; RESET=""; RESET_EPOCH=0
   fi
+fi
+# Human-readable form for every message below — a bare epoch tells nobody when
+# to come back.
+RESET_H="$RESET"
+if (( RESET_EPOCH > 0 )) && [[ "$RESET" =~ ^[0-9]+$ ]]; then
+  RESET_H=$(date -d "@$RESET" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || printf '%s' "$RESET")
 fi
 AGE_NOTE=""
 if [[ -n "$TS" ]] && (( NOW - TS > TTL )); then
@@ -139,7 +183,7 @@ if [[ "$MODE" == "json" ]]; then
 fi
 if [[ "$MODE" == "status" ]]; then
   if [[ -n "$PCT" ]]; then
-    echo "5h window: ${PCT}% used (threshold ${THRESH}%)${RESET:+, resets at $RESET}${AGE_NOTE}"
+    echo "5h window: ${PCT}% used (threshold ${THRESH}%, fan-out reserve ${FANOUT}%)${RESET_H:+, resets at $RESET_H}${AGE_NOTE}"
   else
     echo "5h window: unknown (no statusline cache yet, reading expired, or usage API unreachable)"
   fi
@@ -147,22 +191,45 @@ if [[ "$MODE" == "status" ]]; then
 fi
 
 # ── hook mode ────────────────────────────────────────────────────────────────
-INPUT=$(cat 2>/dev/null || true)
 [[ -n "$PCT" ]] || exit 0          # fail open: no usable usage data
-(( PCT >= THRESH )) || exit 0
+WHEN=${RESET_H:-unknown}
 
-EVENT=$(jq -r '.hook_event_name // empty' <<<"$INPUT" 2>/dev/null || true)
-WHEN=${RESET:-unknown}
+# ── Reserve headroom before an UNGUARDABLE call ──────────────────────────────
+# A fan-out tool spawns its agents through its own runtime, so no PreToolUse
+# hook fires for any of them and nothing can halt it once it is running. The
+# window it is blind for is the whole run. Starting one with little left means
+# its agents die of limit exhaustion mid-flight, it returns PARTIAL results and
+# reports success, and no denial ever occurs to trigger the handoff — which is
+# exactly how a session burned its window with every guard installed.
+# So the entry check is stricter than the work-stop threshold: below FANOUT,
+# ordinary work continues untouched; between FANOUT and THRESH only the
+# unguardable call is refused.
+if [[ "$EVENT" == "PreToolUse" && "$TOOL" == "Workflow" ]] \
+   && (( PCT >= FANOUT && PCT < THRESH )); then
+  jq -cn --arg reason "Plan usage is at ${PCT}% of the 5-hour window — too little headroom to START a fan-out (fan-out reserve ${FANOUT}%, work-stop ${THRESH}%). A workflow spawns its agents in its own runtime: no hook fires for them, nothing can stop it once running, and if they hit the limit mid-run it returns partial results and reports SUCCESS — you would not be told. Do this work inline instead (every tool call stays guarded and you can be halted cleanly at ${THRESH}%), or narrow it to the single most valuable question. Ordinary work is fine — only the fan-out is refused. Window resets at: ${WHEN}." \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
+  exit 0
+fi
+
+(( PCT >= THRESH )) || exit 0
 
 # Bash IS in the guard matcher (a long run of edit/build/test calls was the
 # hole: nothing else fires a PreToolUse check). But the handoff this guard
 # asks for is itself a Bash call, so it must stay runnable at trip time.
 # Exit 0 = "no opinion", not "approved" — normal permission rules still apply,
 # so this is a usage carve-out, not a security bypass.
-if [[ "$EVENT" == "PreToolUse" && "$(jq -r '.tool_name // empty' <<<"$INPUT" 2>/dev/null)" == "Bash" ]]; then
+if [[ "$EVENT" == "PreToolUse" && "$TOOL" == "Bash" ]]; then
   case "$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null)" in
     *autopilot.sh*) exit 0 ;;
   esac
+fi
+
+# PostToolUse on a fan-out tool: the reading above was force-refreshed, so this
+# is the first trustworthy measurement since before the call. The tool already
+# ran — exit 2 puts stderr in front of Claude rather than denying anything.
+if [[ "$EVENT" == "PostToolUse" ]]; then
+  echo "⛔ usage-guard: plan usage is at ${PCT}% (>= ${THRESH}%) now that ${TOOL:-the fan-out} has returned.${AGE_NOTE} Its sub-agents may have been killed mid-run, so treat any results as PARTIAL and verify before relying on them — a fan-out reports success even when agents died of limit exhaustion. Do NOT start more work. Persist state NOW: run the /end-session steps (components.md, mistakes.md, patterns.md, session-log.md, active-task.md). Then, unless the user asked you to wait or the task is blocked on their input, hand off: mkdir -p ~/.cache/claude-autonomy && AUTOPILOT_CLAUDE_ARGS='<mirror the permission mode the user approved>' nohup .claude/autopilot.sh \"continue: <one-line task summary>\" >> ~/.cache/claude-autonomy/autopilot.log 2>&1 & — that command is allow-listed and will run. Window resets at: ${WHEN}." >&2
+  exit 2
 fi
 
 if [[ "$EVENT" == "PreToolUse" ]]; then

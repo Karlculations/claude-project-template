@@ -19,6 +19,14 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Task|Agent|Workflow",
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/usage-guard.sh" }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

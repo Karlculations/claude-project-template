@@ -52,6 +52,11 @@ assert_file "$STATE" "statusline wrote the state cache"
 [[ "$(jq -r '.five_hour.pct' "$STATE")" == "96" ]] || fail "state cache pct != 96"
 ok "state cache normalized (five_hour.pct = 96)"
 
+echo "Test 2a2: statusline renders an epoch resets_at as a clock time"
+printf '{"model":{"display_name":"M"},"rate_limits":{"five_hour":{"used_percentage":36,"resets_at":4102444800}}}' \
+  | CLAUDE_USAGE_STATE="$TMP/epoch-sl.json" bash "$HOOKS/statusline.sh" > "$TMP/sl-epoch.out"
+assert_not_contains "$TMP/sl-epoch.out" "4102444800" "epoch reset time is formatted, not dumped raw"
+
 echo "Test 2b: statusline without rate_limits (API-key user) degrades gracefully"
 printf '{"model":{"display_name":"Bare"}}' | CLAUDE_USAGE_STATE="$TMP/none.json" bash "$HOOKS/statusline.sh" > "$TMP/sl2.out"
 assert_contains "$TMP/sl2.out" "Bare" "model still rendered"
@@ -171,6 +176,55 @@ printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"comman
     bash "$HOOKS/usage-guard.sh" >/dev/null 2>&1 || rc=$?
 [[ "$rc" == "0" ]] || fail "no usable usage data should fail open, rc=$rc"
 assert_file "$TMP/absent.json.fetchfail" "failed fetch recorded so the next call skips the API"
+
+echo "Test 3o: a fan-out is refused with too little headroom, while ordinary work continues"
+# Between FANOUT and THRESH only the unguardable call is refused. A Workflow
+# spawns agents in its own runtime — no hook fires for them and nothing can
+# halt it once running — so it needs reserved headroom, not the last 5%.
+printf '{"hook_event_name":"PreToolUse","tool_name":"Workflow"}' \
+  | CLAUDE_USAGE_OVERRIDE=85 CLAUDE_USAGE_RESET_OVERRIDE="2099-01-01T00:00:00Z" \
+    bash "$HOOKS/usage-guard.sh" > "$TMP/ug-wf.json" 2>/dev/null || true
+assert_contains "$TMP/ug-wf.json" '"permissionDecision":"deny"' "Workflow denied at 85% (fan-out reserve 80%)"
+assert_contains "$TMP/ug-wf.json" "inline" "deny reason offers the guarded alternative"
+printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}' \
+  | CLAUDE_USAGE_OVERRIDE=85 bash "$HOOKS/usage-guard.sh" > "$TMP/ug-bash85.json" 2>/dev/null || true
+[[ ! -s "$TMP/ug-bash85.json" ]] || fail "ordinary Bash blocked at 85% — the reserve must apply to fan-out only"
+ok "ordinary work untouched below the work-stop threshold"
+printf '{"hook_event_name":"PreToolUse","tool_name":"Workflow"}' \
+  | CLAUDE_USAGE_OVERRIDE=50 bash "$HOOKS/usage-guard.sh" > "$TMP/ug-wf50.json" 2>/dev/null || true
+[[ ! -s "$TMP/ug-wf50.json" ]] || fail "Workflow denied at 50%"
+ok "fan-out allowed with headroom"
+printf '{"hook_event_name":"PreToolUse","tool_name":"Workflow"}' \
+  | CLAUDE_USAGE_OVERRIDE=85 CLAUDE_USAGE_FANOUT_THRESHOLD=90 bash "$HOOKS/usage-guard.sh" > "$TMP/ug-wf90.json" 2>/dev/null || true
+[[ ! -s "$TMP/ug-wf90.json" ]] || fail "CLAUDE_USAGE_FANOUT_THRESHOLD not honored"
+ok "CLAUDE_USAGE_FANOUT_THRESHOLD honored"
+
+echo "Test 3p: after a fan-out returns, a fresh reading over threshold warns that results are partial"
+rc=0
+printf '{"hook_event_name":"PostToolUse","tool_name":"Workflow"}' \
+  | CLAUDE_USAGE_OVERRIDE=97 CLAUDE_USAGE_RESET_OVERRIDE="2099-01-01T00:00:00Z" \
+    bash "$HOOKS/usage-guard.sh" 2> "$TMP/ug-post.err" >/dev/null || rc=$?
+[[ "$rc" == "2" ]] || fail "expected exit 2 from PostToolUse at 97%, got $rc"
+ok "PostToolUse exits 2 (tool already ran — stderr reaches Claude)"
+assert_contains "$TMP/ug-post.err" "PARTIAL" "warns the fan-out's results may be incomplete"
+assert_contains "$TMP/ug-post.err" "autopilot.sh" "points at the handoff"
+rc=0
+printf '{"hook_event_name":"PostToolUse","tool_name":"Workflow"}' \
+  | CLAUDE_USAGE_OVERRIDE=50 bash "$HOOKS/usage-guard.sh" 2>/dev/null >/dev/null || rc=$?
+[[ "$rc" == "0" ]] || fail "PostToolUse fired under threshold, rc=$rc"
+ok "PostToolUse silent under threshold"
+
+echo "Test 3q: resets_at as epoch seconds is understood (an unparsed one disables expiry → fails CLOSED)"
+printf '{"ts":1600000000,"source":"statusline","five_hour":{"pct":96,"resets_at":1600000000},"seven_day":{}}' > "$TMP/epoch-stale.json"
+touch "$TMP/epoch-stale.json"
+rc=0
+printf '{"hook_event_name":"UserPromptSubmit"}' \
+  | CLAUDE_USAGE_STATE="$TMP/epoch-stale.json" bash "$HOOKS/usage-guard.sh" 2>/dev/null || rc=$?
+[[ "$rc" == "0" ]] || fail "expired EPOCH-format window still blocked (fail-closed), rc=$rc"
+ok "epoch resets_at in the past is treated as expired, same as ISO"
+CLAUDE_USAGE_OVERRIDE=42 CLAUDE_USAGE_RESET_OVERRIDE=4102444800 \
+  bash "$HOOKS/usage-guard.sh" --status > "$TMP/ug-epoch.out"
+assert_not_contains "$TMP/ug-epoch.out" "4102444800" "--status renders a date, not a raw epoch"
 
 # ─── 4. Context guard ─────────────────────────────────────────────────────────
 
@@ -399,8 +453,10 @@ jq 'del(.hooks.SessionStart[] | select(.matcher == "startup|clear"))' \
   "$TEMPLATE_DIR/.claude/settings.json" > "$P5/.claude/settings.json"
 ( cd "$P5" && bash "$INIT" --sync ) > "$TMP/sync5.out" 2>&1 || { cat "$TMP/sync5.out"; fail "--sync (upgrade) exited non-zero"; }
 assert_contains "$P5/.claude/settings.json" "session-start-brief.sh" "new hook wiring added on upgrade"
-[[ "$(grep -c "usage-guard.sh" "$P5/.claude/settings.json")" == "2" ]] \
-  || fail "usage-guard entries duplicated on upgrade"
+# derived from the template, not hard-coded — the guard is wired to more events over time
+GUARD_REFS=$(grep -c "usage-guard.sh" "$TEMPLATE_DIR/.claude/settings.json")
+[[ "$(grep -c "usage-guard.sh" "$P5/.claude/settings.json")" == "$GUARD_REFS" ]] \
+  || fail "usage-guard entries duplicated on upgrade (expected $GUARD_REFS)"
 ok "existing entries not duplicated"
 
 echo "Test 7c2b: a stale guard matcher is UNIONED with the template's (fix reaches synced projects, project's own alternatives survive)"
@@ -410,6 +466,7 @@ mkdir -p "$P6/.claude"
 # plus an alternative the project added itself, plus a hook of its own.
 jq '(.hooks.PreToolUse[] | select([.hooks[].command | test("usage-guard")] | any) | .matcher)
       = "Task|WebFetch|WebSearch|mcp__.*|NotebookEdit"
+    | del(.hooks.PostToolUse)
     | .hooks.PreToolUse += [{"matcher":"Edit","hooks":[{"type":"command","command":"./mine.sh"}]}]' \
   "$TEMPLATE_DIR/.claude/settings.json" > "$P6/.claude/settings.json"
 ( cd "$P6" && bash "$INIT" --sync ) > "$TMP/sync6.out" 2>&1 || { cat "$TMP/sync6.out"; fail "--sync (matcher union) exited non-zero"; }
@@ -424,9 +481,14 @@ ok "shared alternatives are not duplicated"
 [[ "$(jq -r '.hooks.PreToolUse[] | select([.hooks[].command | test("mine.sh")] | any) | .matcher' "$P6/.claude/settings.json")" == "Edit" ]] \
   || fail "project's own hook matcher was rewritten"
 ok "project's own hook entry left alone"
-[[ "$(grep -c "usage-guard.sh" "$P6/.claude/settings.json")" == "2" ]] || fail "guard entry duplicated during matcher refresh"
+[[ "$(grep -c "usage-guard.sh" "$P6/.claude/settings.json")" == "$GUARD_REFS" ]] \
+  || fail "guard entry duplicated during matcher merge (expected $GUARD_REFS)"
 ok "refresh updates in place, does not duplicate"
 assert_contains "$TMP/sync6.out" "usage-guard watches:" "sync reports the effective matcher"
+POST_M=$(jq -r '.hooks.PostToolUse[]? | select([.hooks[].command | test("usage-guard")] | any) | .matcher' "$P6/.claude/settings.json")
+[[ "$POST_M" == *Workflow* ]] \
+  || fail "PostToolUse fan-out check not added on upgrade — got: '$POST_M'"
+ok "new hook EVENT (PostToolUse fan-out check) reaches an already-synced project"
 
 echo "Test 7c3: re-running --sync is idempotent"
 cp "$P5/.claude/settings.json" "$TMP/before-resync.json"

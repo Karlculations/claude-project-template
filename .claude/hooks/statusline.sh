@@ -32,8 +32,13 @@ r5=$(jq -r '.rate_limits.five_hour.resets_at // empty' <<<"$input" 2>/dev/null)
 line="$model"
 if [[ -n "$p5" ]]; then
   rt=""
-  # ponytail: GNU date only — on BSD/macOS the raw ISO timestamp is shown instead
-  [[ -n "$r5" ]] && rt=$(date -d "$r5" +%H:%M 2>/dev/null || true)
+  # resets_at is epoch seconds from some sources, ISO-8601 from others.
+  # ponytail: GNU date only — on BSD/macOS the raw timestamp is shown instead
+  if [[ "$r5" =~ ^[0-9]+$ ]]; then
+    rt=$(date -d "@$r5" +%H:%M 2>/dev/null || true)
+  elif [[ -n "$r5" ]]; then
+    rt=$(date -d "$r5" +%H:%M 2>/dev/null || true)
+  fi
   [[ -z "$rt" && -n "$r5" ]] && rt="$r5"
   line+=" | 5h ${p5%.*}%${rt:+ → $rt}"
 fi

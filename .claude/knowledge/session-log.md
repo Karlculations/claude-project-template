@@ -15,8 +15,12 @@
 - Tests 78 → **89** assertions. All suites green: 89 / 69 (catalog) / 37 (changelog). Docs synced: components.md, patterns.md, mistakes.md, README, CHANGELOG.
 - Measured guard overhead: **~19ms per Bash call** — the "more frequent checks" cost that had been treated as the blocker is negligible.
 
+- **Fan-out blind spot addressed at the edges** (second pass, after `5f6b50b`). Hooks can't see or halt workflow-internal agents, so the guard now guards the *edges*: PreToolUse denies **starting** a Workflow at ≥`CLAUDE_USAGE_FANOUT_THRESHOLD` (80%, vs the 95% work-stop) — the gap is deliberate, ordinary work continues and only the unguardable call is refused; PostToolUse (new event, matcher `Task|Agent|Workflow`) forces a **cache-bypassing** reading (`FETCH_TTL=0`) and over threshold exits 2 so stderr reaches Claude: results are PARTIAL, hand off. Chose re-measuring over grepping tool output for "limit" strings — a review workflow legitimately discusses rate limits; the meter doesn't.
+- **🔴 Found and fixed MISTAKE-011 while testing the above**: `resets_at` is **epoch seconds** from the live statusline feed but ISO-8601 from other readings — both seen in one session. `date -d` rejects a bare epoch, `|| echo 0` swallowed it, and the `(( RESET_EPOCH > 0 ))` guard then **skipped the expiry check entirely**, reinstating MISTAKE-004's fail-CLOSED bug. Verified against `HEAD`: a stale `pct=96` with a past epoch reset returned exit 2 and blocked every prompt forever. Fixed at both call sites + human-readable rendering (`--status` was printing `resets at 1784935200`).
+- Tests 89 → **102** assertions (fan-out reserve, ordinary-work-untouched, PostToolUse both sides, epoch expiry, epoch rendering, PostToolUse reaching synced projects). Hard-coded `usage-guard.sh` reference counts in the sync tests now derive from the template so they don't rot as the guard gains events.
+
 ### In Progress / Left Off At
-- Nothing in flight. Committed and pushed to `origin/main`.
+- First pass committed and pushed as `5f6b50b`. The fan-out work + MISTAKE-011 fix are a SECOND, uncommitted change set at time of writing.
 
 ### Blockers
 - None.
@@ -27,7 +31,9 @@
 - Root CHANGELOG entries deliberately left under `## [Unreleased]` — this repo has no version manifest and has never cut a release; pushing the template is not a deploy.
 
 ### Watch Out For (Next Session)
-- **Structural, unfixed**: hooks observe main-loop tool calls only, so agents spawned *inside* a running Workflow are invisible to them. Refusing to *start* a workflow near the limit is the only lever — one already in flight cannot be stopped by hooks. What improved is that the next Bash call after it returns now trips the guard.
+- **Still structurally unfixable**: the window *during* a workflow run. Entry and exit are now guarded; nothing can halt agents mid-flight. Do not describe the blind spot as closed.
+- `CLAUDE_USAGE_FANOUT_THRESHOLD` default 80% is a guess, not a measurement — if workflows get refused too eagerly (or still die mid-run), that's the dial. Karl has not exercised it against a real near-limit workflow yet.
+- The epoch/ISO split (MISTAKE-011) suggests the `rate_limits` payload shape is not stable across Claude Code versions. Any new field read from it should be shape-checked, not assumed.
 - The union merge means a bad matcher alternative shipped in the template becomes sticky in synced projects — get widenings right the first time.
 - This repo dogfoods its own hooks: every Bash call here now runs `usage-guard.sh`. If the session feels slow, check `~/.cache/claude-autonomy/usage-state.json.fetchfail` and `.claude/hooks/usage-guard.sh --status`.
 
