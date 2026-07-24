@@ -236,25 +236,59 @@ printf '%s\n%s\n' \
 
 echo "Test 4: context guard blocks the stop over threshold"
 printf '{"session_id":"t4-high","transcript_path":"%s","stop_hook_active":false}' "$TRANSCRIPT" \
-  | TMPDIR="$TMP" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg.json"
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/no-ctx.json" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg.json"
 assert_contains "$TMP/cg.json" '"decision":"block"' "stop blocked at 82% of a 200-token window"
 assert_contains "$TMP/cg.json" "end-session" "block reason demands /end-session"
 
 echo "Test 4b: fires only once per session"
 printf '{"session_id":"t4-high","transcript_path":"%s","stop_hook_active":false}' "$TRANSCRIPT" \
-  | TMPDIR="$TMP" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg2.json"
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/no-ctx.json" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg2.json"
 [[ ! -s "$TMP/cg2.json" ]] || fail "context guard blocked twice for the same session"
 ok "once-per-session marker respected"
 
 echo "Test 4c: stop_hook_active short-circuits (no infinite loop)"
 printf '{"session_id":"t4-loop","transcript_path":"%s","stop_hook_active":true}' "$TRANSCRIPT" \
-  | TMPDIR="$TMP" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg3.json"
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/no-ctx.json" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg3.json"
 [[ ! -s "$TMP/cg3.json" ]] || fail "context guard blocked while stop_hook_active"
 ok "stop_hook_active respected"
 
+echo "Test 4f: the OFFICIAL context reading beats estimating from the transcript"
+# Claude Code hands the statusline context_window.used_percentage + the real
+# window size. Estimating instead (transcript tokens / assumed 200k) reads
+# ~89% on a 1M-context model at 18% real usage — a false emergency.
+CTX="$TMP/ctx-state.json"
+printf '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":22,"context_window_size":1000000}}' \
+  | CLAUDE_USAGE_STATE="$TMP/ctx-u.json" CLAUDE_CONTEXT_STATE="$CTX" bash "$HOOKS/statusline.sh" >/dev/null
+assert_file "$CTX" "statusline caches the official context reading"
+[[ "$(jq -r '.pct' "$CTX")" == "22" && "$(jq -r '.size' "$CTX")" == "1000000" ]] \
+  || fail "context cache wrong: $(cat "$CTX")"
+ok "cached pct=22 and the real window size (1000000)"
+BIG="$TMP/big-transcript.jsonl"
+printf '{"type":"assistant","message":{"usage":{"input_tokens":178000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' > "$BIG"
+printf '{"session_id":"t4e","transcript_path":"%s","stop_hook_active":false}' "$BIG" \
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$CTX" bash "$HOOKS/context-guard.sh" > "$TMP/cg5.json"
+[[ ! -s "$TMP/cg5.json" ]] || fail "blocked at a real 22% — official reading ignored: $(cat "$TMP/cg5.json")"
+ok "178k tokens on a 1M window does NOT trigger the dump"
+printf '{"session_id":"t4e2","transcript_path":"%s","stop_hook_active":false}' "$BIG" \
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/no-ctx.json" bash "$HOOKS/context-guard.sh" > "$TMP/cg6.json"
+assert_contains "$TMP/cg6.json" '"decision":"block"' "same input DOES block against the assumed 200k window (the bug)"
+
+echo "Test 4g: with no fresh percentage, a cached window size still beats the 200k default"
+jq -c '.pct = null' "$CTX" > "$TMP/ctx-sizeonly.json"
+printf '{"session_id":"t4f","transcript_path":"%s","stop_hook_active":false}' "$BIG" \
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/ctx-sizeonly.json" bash "$HOOKS/context-guard.sh" > "$TMP/cg7.json"
+[[ ! -s "$TMP/cg7.json" ]] || fail "fallback estimate ignored the cached window size"
+ok "fallback estimate uses the real window size when the sensor cached one"
+
+echo "Test 4h: an explicit CLAUDE_CONTEXT_WINDOW still drives the fallback"
+printf '{"session_id":"t4g","transcript_path":"%s","stop_hook_active":false}' "$BIG" \
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/ctx-sizeonly.json" CLAUDE_CONTEXT_WINDOW=200000 \
+    bash "$HOOKS/context-guard.sh" > "$TMP/cg8.json"
+assert_contains "$TMP/cg8.json" '"decision":"block"' "explicit window overrides the cached size"
+
 echo "Test 4d: under threshold stays silent"
 printf '{"session_id":"t4-low","transcript_path":"%s","stop_hook_active":false}' "$TRANSCRIPT" \
-  | TMPDIR="$TMP" bash "$HOOKS/context-guard.sh" > "$TMP/cg4.json"
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/no-ctx.json" bash "$HOOKS/context-guard.sh" > "$TMP/cg4.json"
 [[ ! -s "$TMP/cg4.json" ]] || fail "context guard blocked under threshold (200k window)"
 ok "no block at tiny usage of the default window"
 
@@ -262,7 +296,7 @@ echo "Test 4e: garbage transcript fails open"
 printf 'not json at all\n' > "$TMP/garbage.jsonl"
 rc=0
 printf '{"session_id":"t4-garbage","transcript_path":"%s","stop_hook_active":false}' "$TMP/garbage.jsonl" \
-  | TMPDIR="$TMP" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg5.json" 2>/dev/null || rc=$?
+  | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/no-ctx.json" CLAUDE_CONTEXT_WINDOW=200 bash "$HOOKS/context-guard.sh" > "$TMP/cg5.json" 2>/dev/null || rc=$?
 [[ "$rc" == "0" && ! -s "$TMP/cg5.json" ]] || fail "context guard did not fail open on unparseable transcript"
 ok "unparseable transcript = fail open"
 

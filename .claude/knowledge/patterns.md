@@ -17,13 +17,19 @@ When a pattern exists here, follow it by default. If you think a pattern should 
 **Applies to**: Anything that needs plan-usage or context data inside hooks
 
 **The Pattern**:
-The statusline script is the only official receiver of `rate_limits` data — it caches a normalized JSON state file; guard hooks only ever read that cache. The undocumented OAuth endpoint is a headless-only fallback.
+The statusline script is the only official receiver of harness telemetry — it caches normalized JSON state files; guard hooks only ever read those caches. The undocumented OAuth endpoint is a headless-only fallback.
+
+Two sensors, two caches (2026-07-24):
+- `rate_limits.*` → `usage-state.json` → `usage-guard.sh`
+- `context_window.{used_percentage,context_window_size}` → `context-state.json` → `context-guard.sh`
 
 **Why**:
-No polling, no credentials in the interactive path, one place to normalize two data shapes.
+No polling, no credentials in the interactive path, one place to normalize two data shapes. Separate files because an API-key user has no `rate_limits` but still has a context window, and `usage-guard.sh` rewrites the usage file from its own API fallback (a shared file would clobber the context reading).
+
+**Before adding a hook that needs a number, check whether the statusline payload already carries it.** `context-guard.sh` spent its whole life *estimating* context from transcript tokens over an assumed 200k window while `context_window.used_percentage` sat in the payload one script over — reading ~89% on a 1M-context model at 18% real usage (MISTAKE-012). The payload also carries `model.id` (with the `[1m]` suffix the transcript drops), `version`, `cost`, and `exceeds_200k_tokens`.
 
 **Do NOT**:
-Call the OAuth endpoint from interactive-path hooks, or parse `/usage` UI output.
+Call the OAuth endpoint from interactive-path hooks, or parse `/usage` UI output. Do not infer window size from the model id in the transcript — it records `claude-opus-5`, not `claude-opus-5[1m]`.
 
 ---
 

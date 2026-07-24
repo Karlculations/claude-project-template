@@ -11,6 +11,22 @@ input=$(cat)
 # Private, user-owned location (matches usage-guard.sh) — never bare /tmp.
 STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/claude-autonomy"
 STATE="${CLAUDE_USAGE_STATE:-$STATE_DIR/usage-state.json}"
+CTX_STATE="${CLAUDE_CONTEXT_STATE:-$STATE_DIR/context-state.json}"
+
+# Context window: Claude Code hands the statusline the OFFICIAL numbers
+# (context_window.used_percentage + .context_window_size). context-guard.sh
+# used to estimate this from transcript tokens over an assumed 200k window,
+# which reads ~89% on a 1M-context model at 18% real usage. Cache the real
+# thing. Separate file from the usage state: an API-key user has no
+# rate_limits but still has a context window, and usage-guard.sh rewrites the
+# usage file from its own API fallback.
+ctx=$(jq -c '{ts: (now|floor),
+  pct: (.context_window.used_percentage // null),
+  size: (.context_window.context_window_size // null)}' <<<"$input" 2>/dev/null || true)
+if [[ -n "$ctx" && $(jq -r '.pct // "null"' <<<"$ctx") != "null" ]]; then
+  mkdir -p "$(dirname "$CTX_STATE")" 2>/dev/null || true
+  printf '%s' "$ctx" > "$CTX_STATE.tmp.$$" && mv "$CTX_STATE.tmp.$$" "$CTX_STATE"
+fi
 
 norm=$(jq -c '{ts: (now|floor), source: "statusline",
   five_hour: {pct: (.rate_limits.five_hour.used_percentage // null),

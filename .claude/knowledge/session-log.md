@@ -19,8 +19,12 @@
 - **🔴 Found and fixed MISTAKE-011 while testing the above**: `resets_at` is **epoch seconds** from the live statusline feed but ISO-8601 from other readings — both seen in one session. `date -d` rejects a bare epoch, `|| echo 0` swallowed it, and the `(( RESET_EPOCH > 0 ))` guard then **skipped the expiry check entirely**, reinstating MISTAKE-004's fail-CLOSED bug. Verified against `HEAD`: a stale `pct=96` with a past epoch reset returned exit 2 and blocked every prompt forever. Fixed at both call sites + human-readable rendering (`--status` was printing `resets at 1784935200`).
 - Tests 89 → **102** assertions (fan-out reserve, ordinary-work-untouched, PostToolUse both sides, epoch expiry, epoch rendering, PostToolUse reaching synced projects). Hard-coded `usage-guard.sh` reference counts in the sync tests now derive from the template so they don't rot as the guard gains events.
 
+- **🟡 MISTAKE-012 — the context guard was measuring against an invented constant.** It fired at "~86%" mid-session; `/context` showed 18% (178k of a **1M** window). `context-guard.sh` divided by a hardcoded `CLAUDE_CONTEXT_WINDOW=200000` → 89%. Fix: the statusline payload already carries `context_window.used_percentage` AND `context_window_size` — `statusline.sh` now caches them to `context-state.json`, `context-guard.sh` prefers that and only estimates (headless) when it is stale, using the cached real size over the 200k default. Rejected approach: mapping model→window from the transcript; `.message.model` records `claude-opus-5` **without** the `[1m]` suffix, so it cannot distinguish the variants.
+- **How the payload was determined**: temporarily teed `statusline.sh`'s stdin to the scratchpad, read one real render, reverted. Worth repeating — it also exposed `model.id` (full, with `[1m]`), `version`, `cost`, `exceeds_200k_tokens`. Do this before estimating anything else from a harness.
+- Tests 102 → **108**. Context-guard tests now pin `CLAUDE_CONTEXT_STATE` to a temp path — without it they read the developer's real cache and pass/fail by accident.
+
 ### In Progress / Left Off At
-- First pass committed and pushed as `5f6b50b`. The fan-out work + MISTAKE-011 fix are a SECOND, uncommitted change set at time of writing.
+- All three change sets committed and pushed: `5f6b50b` (matcher widening), `d621c1c` (fan-out edges + MISTAKE-011), and the context-window fix. Nothing in flight.
 
 ### Blockers
 - None.
@@ -34,6 +38,8 @@
 - **Still structurally unfixable**: the window *during* a workflow run. Entry and exit are now guarded; nothing can halt agents mid-flight. Do not describe the blind spot as closed.
 - `CLAUDE_USAGE_FANOUT_THRESHOLD` default 80% is a guess, not a measurement — if workflows get refused too eagerly (or still die mid-run), that's the dial. Karl has not exercised it against a real near-limit workflow yet.
 - The epoch/ISO split (MISTAKE-011) suggests the `rate_limits` payload shape is not stable across Claude Code versions. Any new field read from it should be shape-checked, not assumed.
+- **Three bugs today, one shape**: a matcher that never ran, a timestamp that couldn't be parsed, a window size that was invented. Each guard was individually correct and collectively measuring the wrong thing. When touching this layer, verify the *input* to the check before reviewing the logic of the check.
+- `CLAUDE_CONTEXT_WINDOW=200000` still exists as the last-resort fallback default. It is only reached headless with no cached size ever written — but it is still a guess, and still wrong on 1M models.
 - The union merge means a bad matcher alternative shipped in the template becomes sticky in synced projects — get widenings right the first time.
 - This repo dogfoods its own hooks: every Bash call here now runs `usage-guard.sh`. If the session feels slow, check `~/.cache/claude-autonomy/usage-state.json.fetchfail` and `.claude/hooks/usage-guard.sh --status`.
 

@@ -13,6 +13,25 @@ Before starting any work, scan this file for patterns matching your current task
 
 ---
 
+**ID**: MISTAKE-012
+**Severity**: 🟡
+**Date**: 2026-07-24
+**Context**: `context-guard.sh` firing at "86%" on a session that was actually 18% full
+
+**What went wrong**:
+The guard estimated context as `transcript tokens * 100 / CLAUDE_CONTEXT_WINDOW`, defaulting the window to a hardcoded `200000`. On Opus 5 with a **1M** window, 178k tokens = 18% real usage but computed as **89%** — so it blocked a stop and demanded an emergency knowledge dump with 822k tokens of headroom left. Caught only because Karl ran `/context` and compared. Nothing in the guard could have noticed: it had no way to know the window size and never claimed to.
+
+**What actually worked**:
+The statusline payload already carries the official numbers — `context_window.used_percentage` **and** `context_window.context_window_size`. `statusline.sh` now caches them to `context-state.json`; `context-guard.sh` prefers that reading and only estimates when it is absent or stale (headless runs), using the cached real size in preference to the 200k default.
+
+**What was tried (that failed)**:
+Reading the model id from the transcript to map model → window. The transcript records `.message.model = "claude-opus-5"` — **without** the `[1m]` suffix that distinguishes the 1M variant, so it cannot tell the two apart. (`~/.claude/settings.json` does have `"model": "opus[1m]"`, and the statusline payload's `model.id` is the full `claude-opus-5[1m]` — but `context_window_size` is authoritative and needs no mapping table.)
+
+**Pattern to avoid**:
+Don't ship a guard whose core measurement is an assumed constant — a hardcoded window, page size, or rate is a silent lie the moment the platform changes underneath it. Check what the harness already tells you before estimating: probe the actual payload (dump it once and look) rather than reasoning about what it probably contains. Third instance today of the same shape — the matcher that never ran (MISTAKE-010), the timestamp it couldn't parse (MISTAKE-011), and now a window size it invented.
+
+---
+
 **ID**: MISTAKE-011
 **Severity**: 🔴
 **Date**: 2026-07-24
