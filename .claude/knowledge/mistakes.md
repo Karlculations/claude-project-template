@@ -13,6 +13,22 @@ Before starting any work, scan this file for patterns matching your current task
 
 ---
 
+**ID**: MISTAKE-013
+**Severity**: 🟡
+**Date**: 2026-07-24
+**Context**: The context-window fix itself — shipped in `4a60b2b`, fixed in `bde47b7`
+
+**What went wrong**:
+Adding the context cache, I copied the usage cache's shape: one file at a fixed path. Usage is **account-wide**, so a single shared file is correct there. Context belongs to **one session**. Two concurrent Claude Code sessions were therefore last-writer-wins on `context-state.json` — a session at 91% would read another session's 12% and never fire its guard. This was live on `main` for one commit. Only found because Karl asked me to confirm the window wasn't hard-coded, which made me re-read the path rather than the arithmetic.
+
+**What actually worked**:
+Key the cache by `session_id` (present in both the statusline payload and the Stop hook input): `context-state-<sid>.json`. Sanitize the id to `^[A-Za-z0-9._-]+$` before it reaches a path — it also feeds the once-per-session marker, which had been interpolating it unsanitized. Prune stale per-session files when a new session's file is created, not on every render.
+
+**Pattern to avoid**:
+When reusing an existing mechanism, re-derive its assumptions instead of inheriting them — **a cache's scope must match its metric's scope**. "It worked for usage" is not evidence it fits context. And note what actually caught it: a request to *confirm* something I believed was already true. Treat "prove this works" as an invitation to re-read the code, not to restate the claim.
+
+---
+
 **ID**: MISTAKE-012
 **Severity**: 🟡
 **Date**: 2026-07-24

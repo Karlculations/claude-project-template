@@ -25,7 +25,8 @@
 - Tests 102 → **113**. Context-guard tests now pin `CLAUDE_CONTEXT_STATE` to a temp path — without it they read the developer's real cache and pass/fail by accident.
 
 ### In Progress / Left Off At
-- All three change sets committed and pushed: `5f6b50b` (matcher widening), `d621c1c` (fan-out edges + MISTAKE-011), and the context-window fix. Nothing in flight.
+- Nothing in flight. Four commits, all pushed to `origin/main`: `5f6b50b` (matcher widening), `d621c1c` (fan-out edges + MISTAKE-011), `4a60b2b` (real context window + MISTAKE-012), `bde47b7` (per-session context cache + MISTAKE-013). No `active-task.md`.
+- CHANGELOG entries remain under `## [Unreleased]` — this repo has no version manifest and has never cut a release.
 
 ### Blockers
 - None.
@@ -39,7 +40,8 @@
 - **Still structurally unfixable**: the window *during* a workflow run. Entry and exit are now guarded; nothing can halt agents mid-flight. Do not describe the blind spot as closed.
 - `CLAUDE_USAGE_FANOUT_THRESHOLD` default 80% is a guess, not a measurement — if workflows get refused too eagerly (or still die mid-run), that's the dial. Karl has not exercised it against a real near-limit workflow yet.
 - The epoch/ISO split (MISTAKE-011) suggests the `rate_limits` payload shape is not stable across Claude Code versions. Any new field read from it should be shape-checked, not assumed.
-- **Three bugs today, one shape**: a matcher that never ran, a timestamp that couldn't be parsed, a window size that was invented. Each guard was individually correct and collectively measuring the wrong thing. When touching this layer, verify the *input* to the check before reviewing the logic of the check.
+- **Four bugs today, one shape** (MISTAKE-010 → 013): a matcher that never ran, a timestamp that couldn't be parsed, a window size that was invented, a cache scoped to the wrong thing. Every guard's *logic* was correct; every one was fed a wrong input. When touching this layer, verify what the check is FED before reviewing what the check DOES.
+- Three of the four were found by checking a claim rather than by a failing test — the suite was green through all of them. Guard tests assert behaviour given an input; they cannot tell you the input is the wrong one.
 - `CLAUDE_CONTEXT_WINDOW=200000` still exists as the last-resort fallback default. It is only reached headless with no cached size ever written — but it is still a guess, and still wrong on 1M models.
 - The union merge means a bad matcher alternative shipped in the template becomes sticky in synced projects — get widenings right the first time.
 - This repo dogfoods its own hooks: every Bash call here now runs `usage-guard.sh`. If the session feels slow, check `~/.cache/claude-autonomy/usage-state.json.fetchfail` and `.claude/hooks/usage-guard.sh --status`.
