@@ -4,6 +4,35 @@
 
 ---
 
+## Session: 2026-07-24 — Usage guard fired on nothing: matcher widened to Bash/Workflow, --sync matcher union
+
+### Completed
+- **Root cause of "the limit was hit and nothing paused"**: the guard was healthy and simply never invoked. PreToolUse matcher was `Task|WebFetch|WebSearch|mcp__.*`, so a long run of `Bash`/`Read`/`Edit`/`Write` fired **zero** checks; the sub-agents that actually died were spawned inside a background `Workflow` (own runtime → no main-loop PreToolUse); and by the next prompt `resets_at` had passed so UserPromptSubmit correctly failed open. Logged as MISTAKE-010.
+- **Matcher** → `Task|Agent|Workflow|WebFetch|WebSearch|mcp__.*|Bash`. `Agent` because the subagent tool is named that in current builds; `Workflow` to refuse *starting* one near the limit.
+- **Handoff carve-out** (`usage-guard.sh:150`): a Bash command containing `autopilot.sh` exits 0. Bash had been excluded from the matcher precisely because the deny message asks Claude to run `nohup .claude/autopilot.sh` — the guard would have denied its own escape hatch. Deny reason now states explicitly that the handoff will still run, so Claude doesn't infer "Bash denied → can't hand off". `Write`/`Edit`/`Read` stay unmatched so the /end-session dump can complete.
+- **Fetch backoff** (`CLAUDE_USAGE_FETCH_BACKOFF`, 120s): at one guard call per Bash, a dead API meant a 6s curl timeout *every call*. Also validated `CLAUDE_USAGE_STATE_TTL` before `(( ))` — same class as MISTAKE-005, env-sourced rather than file-sourced.
+- **`sync_autonomy()` matcher union**: the basename-keyed merge froze the matcher at first sync, so the fix would never have reached an already-synced project while `--sync` printed "up to date". Now unions the `|` alternatives (existing order first) for entries referencing the same template script. `--sync` prints `↳ usage-guard watches: …`.
+- Tests 78 → **89** assertions. All suites green: 89 / 69 (catalog) / 37 (changelog). Docs synced: components.md, patterns.md, mistakes.md, README, CHANGELOG.
+- Measured guard overhead: **~19ms per Bash call** — the "more frequent checks" cost that had been treated as the blocker is negligible.
+
+### In Progress / Left Off At
+- Nothing in flight. Committed and pushed to `origin/main`.
+
+### Blockers
+- None.
+
+### Key Decisions Made
+- **Carve-outs belong in the guard's logic, not the matcher.** A matcher-level exclusion is unconditional — it blinds the guard everywhere, not just where the exception is needed.
+- **`--sync` unions matchers rather than overwriting them** (user's call — first pass overwrote; union keeps a project's own alternatives). Accepted trade: the template can widen a matcher but never shrink one. For a guard that is the fail-safe direction; to narrow, edit the entry or delete it and let the next `--sync` re-add the template's.
+- Root CHANGELOG entries deliberately left under `## [Unreleased]` — this repo has no version manifest and has never cut a release; pushing the template is not a deploy.
+
+### Watch Out For (Next Session)
+- **Structural, unfixed**: hooks observe main-loop tool calls only, so agents spawned *inside* a running Workflow are invisible to them. Refusing to *start* a workflow near the limit is the only lever — one already in flight cannot be stopped by hooks. What improved is that the next Bash call after it returns now trips the guard.
+- The union merge means a bad matcher alternative shipped in the template becomes sticky in synced projects — get widenings right the first time.
+- This repo dogfoods its own hooks: every Bash call here now runs `usage-guard.sh`. If the session feels slow, check `~/.cache/claude-autonomy/usage-state.json.fetchfail` and `.claude/hooks/usage-guard.sh --status`.
+
+---
+
 ## Session: 2026-07-22/23 — Stack catalog: subagent-driven execution, merged to main
 
 ### Completed

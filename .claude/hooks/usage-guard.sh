@@ -16,14 +16,21 @@
 #      CLAUDE_USAGE_THRESHOLD=95  block at this 5h-window percentage
 #      CLAUDE_USAGE_STATE=<path>  state file (default: private per-user dir)
 #      CLAUDE_USAGE_STATE_TTL=600 seconds before cached state is stale
+#      CLAUDE_USAGE_FETCH_BACKOFF=120  seconds to skip the API after a failed
+#                                 fetch (the guard runs on every Bash call —
+#                                 without this a dead API costs 6s each time)
 set -uo pipefail
 
 # Private, user-owned location — never bare /tmp (world-writable: a planted
 # state file must not be readable as ours, and its values feed comparisons).
 STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/claude-autonomy"
 STATE="${CLAUDE_USAGE_STATE:-$STATE_DIR/usage-state.json}"
+FAILMARK="$STATE.fetchfail"
 THRESH="${CLAUDE_USAGE_THRESHOLD:-95}"
 [[ "$THRESH" =~ ^[0-9]+$ ]] || THRESH=95
+# Env values reach bash arithmetic below — digits only, same rule as the state file.
+TTL="${CLAUDE_USAGE_STATE_TTL:-600}";      [[ "$TTL" =~ ^[0-9]+$ ]] || TTL=600
+BACKOFF="${CLAUDE_USAGE_FETCH_BACKOFF:-120}"; [[ "$BACKOFF" =~ ^[0-9]+$ ]] || BACKOFF=120
 MODE="hook"; case "${1:-}" in --status) MODE=status;; --json) MODE=json;; esac
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -41,10 +48,9 @@ if [[ "$MODE" == "hook" && "${CLAUDE_AUTONOMY:-on}" == "off" ]]; then
   exit 0
 fi
 
-state_fresh() {
-  [[ -f "$STATE" ]] &&
-    (( $(date +%s) - $(stat -c %Y "$STATE" 2>/dev/null || stat -f %m "$STATE" 2>/dev/null || echo 0) \
-       < ${CLAUDE_USAGE_STATE_TTL:-600} ))
+younger_than() {   # $1 = file, $2 = max age in seconds
+  [[ -f "$1" ]] &&
+    (( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0) < $2 ))
 }
 
 oauth_token() {
@@ -81,12 +87,18 @@ get_state() {
         seven_day: {pct: null, resets_at: null}}'
     return
   fi
-  if state_fresh; then cat "$STATE" 2>/dev/null && return; fi
+  if younger_than "$STATE" "$TTL"; then cat "$STATE" 2>/dev/null && return; fi
   local s
-  if s=$(fetch_api); then
+  # Back off after a failed fetch: this runs on every guarded call (Bash
+  # included), and a 6s curl timeout per call would stall the whole session.
+  if ! younger_than "$FAILMARK" "$BACKOFF"; then
     mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
-    printf '%s' "$s" > "$STATE.tmp.$$" && mv "$STATE.tmp.$$" "$STATE"
-    printf '%s' "$s"; return
+    if s=$(fetch_api); then
+      rm -f "$FAILMARK" 2>/dev/null || true
+      printf '%s' "$s" > "$STATE.tmp.$$" && mv "$STATE.tmp.$$" "$STATE"
+      printf '%s' "$s"; return
+    fi
+    touch "$FAILMARK" 2>/dev/null || true
   fi
   # stale state beats no state — the expiry check below keeps it honest
   [[ -f "$STATE" ]] && cat "$STATE" 2>/dev/null
@@ -116,7 +128,7 @@ if [[ -n "$RESET" ]]; then
   fi
 fi
 AGE_NOTE=""
-if [[ -n "$TS" ]] && (( NOW - TS > ${CLAUDE_USAGE_STATE_TTL:-600} )); then
+if [[ -n "$TS" ]] && (( NOW - TS > TTL )); then
   AGE_NOTE=" [reading is $(( (NOW - TS) / 60 ))m old; sensor stale, API unreachable]"
 fi
 
@@ -142,9 +154,20 @@ INPUT=$(cat 2>/dev/null || true)
 EVENT=$(jq -r '.hook_event_name // empty' <<<"$INPUT" 2>/dev/null || true)
 WHEN=${RESET:-unknown}
 
+# Bash IS in the guard matcher (a long run of edit/build/test calls was the
+# hole: nothing else fires a PreToolUse check). But the handoff this guard
+# asks for is itself a Bash call, so it must stay runnable at trip time.
+# Exit 0 = "no opinion", not "approved" — normal permission rules still apply,
+# so this is a usage carve-out, not a security bypass.
+if [[ "$EVENT" == "PreToolUse" && "$(jq -r '.tool_name // empty' <<<"$INPUT" 2>/dev/null)" == "Bash" ]]; then
+  case "$(jq -r '.tool_input.command // empty' <<<"$INPUT" 2>/dev/null)" in
+    *autopilot.sh*) exit 0 ;;
+  esac
+fi
+
 if [[ "$EVENT" == "PreToolUse" ]]; then
   # Deny reason is shown to Claude — this is the mid-turn "wrap up now" signal.
-  jq -cn --arg reason "Plan usage is at ${PCT}% of the 5-hour window (threshold ${THRESH}%). Do NOT start new work or expensive tool calls. Persist state NOW: run the /end-session steps (update .claude/knowledge/ components.md, mistakes.md, patterns.md, session-log.md, active-task.md). Then, unless the user asked you to wait for them or the task is blocked on their input, hand off before ending the turn: mkdir -p ~/.cache/claude-autonomy && AUTOPILOT_CLAUDE_ARGS='<mirror the permission mode the user approved, e.g. --permission-mode acceptEdits>' nohup .claude/autopilot.sh \"continue: <one-line task summary>\" >> ~/.cache/claude-autonomy/autopilot.log 2>&1 & — autopilot sleeps until the reset, then finishes headless. Otherwise just end the turn; work resumes after the window resets at: ${WHEN}." \
+  jq -cn --arg reason "Plan usage is at ${PCT}% of the 5-hour window (threshold ${THRESH}%). Do NOT start new work or expensive tool calls. Persist state NOW: run the /end-session steps (update .claude/knowledge/ components.md, mistakes.md, patterns.md, session-log.md, active-task.md). Then, unless the user asked you to wait for them or the task is blocked on their input, hand off before ending the turn: mkdir -p ~/.cache/claude-autonomy && AUTOPILOT_CLAUDE_ARGS='<mirror the permission mode the user approved, e.g. --permission-mode acceptEdits>' nohup .claude/autopilot.sh \"continue: <one-line task summary>\" >> ~/.cache/claude-autonomy/autopilot.log 2>&1 & — autopilot sleeps until the reset, then finishes headless. That autopilot command is allow-listed by this guard and WILL run even though other Bash calls are now denied, so do not skip the handoff just because Bash was denied. Otherwise just end the turn; work resumes after the window resets at: ${WHEN}." \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
   exit 0
 fi

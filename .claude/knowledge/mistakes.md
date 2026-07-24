@@ -13,6 +13,25 @@ Before starting any work, scan this file for patterns matching your current task
 
 ---
 
+**ID**: MISTAKE-010
+**Severity**: 🟡
+**Date**: 2026-07-24
+**Context**: Usage guard did not fire when a session actually hit its 5-hour limit
+
+**What went wrong**:
+A session ran out of window and nothing paused or handed off. Three causes, all "the guard was never asked":
+1. The PreToolUse matcher was `Task|WebFetch|WebSearch|mcp__.*`. After the expensive call returned, the session did a long run of `Bash`/`Read`/`Edit`/`Write` — none matched, so **no guard check fired for that entire stretch**. The guard was healthy and simply never consulted.
+2. The thing that died was sub-agents *inside* a background `Workflow`. Workflow spawns through its own runtime, so those are not main-loop tool calls and fire no PreToolUse hook. The workflow degraded gracefully and returned partial results, so from the main loop the call **succeeded** — no denial, nothing to trigger autopilot.
+3. By the time the user sent the next prompt, `resets_at` was past, so the UserPromptSubmit guard correctly failed open. Nothing looked broken afterwards.
+
+**What actually worked**:
+Matcher widened to `Task|Agent|Workflow|WebFetch|WebSearch|mcp__.*|Bash`, with a carve-out for the handoff (`*autopilot.sh*` commands exit 0) — otherwise the guard denies the very command its deny message asks for, which is why Bash had been excluded in the first place. `Write`/`Edit`/`Read` stay unmatched so the `/end-session` dump can still complete.
+
+**Pattern to avoid**:
+A guard is only as good as the events it is *invoked on* — "the hook is correct" and "the hook ran" are different claims, and a narrow matcher fails silently and looks identical to no-limit-reached. When excluding an event from a guard to keep an escape hatch open (Bash, here), put the carve-out in the guard's own logic, not in the matcher — matcher-level exclusions are unconditional and blind the guard everywhere else too. Blind spot #2 is structural: hooks observe main-loop tool calls, so the only lever on a background workflow is refusing to *start* one near the limit; a workflow already in flight cannot be stopped by hooks.
+
+---
+
 **ID**: MISTAKE-009
 **Severity**: 🟡
 **Date**: 2026-07-23

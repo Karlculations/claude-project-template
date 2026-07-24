@@ -315,21 +315,41 @@ sync_autonomy() {
   else
     # Additive, idempotent hooks merge: a template hook entry is appended only
     # when no existing entry for that event already references the same script
-    # basename. Existing entries (user-modified or older-version) are NEVER
-    # touched, so template updates that add a new hook reach synced projects.
+    # basename. A project's OWN hooks are never touched.
+    # For an existing entry that references the SAME template script, the
+    # `matcher` is UNIONED with the template's, never overwritten: a matcher is
+    # a regex alternation, so merging it is set-union over the `|` alternatives
+    # (existing order first, template-only ones appended).
+    #   why union, not leave-alone: freezing the matcher at first sync meant a
+    #     widened guard never reached an already-synced project, while --sync
+    #     still cheerfully reported "up to date".
+    #   why union, not overwrite: a project may have added its own alternatives;
+    #     dropping one silently un-guards a tool.
+    #   trade-off: the template can widen a matcher but can never shrink one.
+    #     For a guard that is the fail-safe direction — to narrow it, edit the
+    #     entry (or delete it and let the next --sync re-add the template's).
+    # Everything else about an existing entry is preserved.
     # Opt out of a guard with CLAUDE_AUTONOMY=off — deleting its entry means
     # the next --sync re-adds it.
-    local before after
+    local before after rematched
     before=$(jq '[.hooks // {} | .[][]] | length' "$tgt")
     if jq -s '.[1] as $tpl | .[0]
               | (if has("statusLine") then . else . + {statusLine: $tpl.statusLine} end)
               | (.hooks // {}) as $th
-              | .hooks = (reduce ($tpl.hooks | to_entries[]) as $e ($th;
-                  ([ ($th[$e.key] // [])[] | .hooks[]?.command // empty | split("/") | last ]) as $have
-                  | .[$e.key] = (($th[$e.key] // [])
-                      + ($e.value | map(select(
-                          [ .hooks[]?.command // empty | split("/") | last ] | inside($have) | not
-                        ))))
+              | def bases: [ .hooks[]?.command // empty | split("/") | last ];
+                .hooks = (reduce ($tpl.hooks | to_entries[]) as $e ($th;
+                  ([ ($th[$e.key] // [])[] | bases[] ]) as $have
+                  | .[$e.key] = ((($th[$e.key] // []) | map(
+                        . as $x
+                        | ([ $e.value[] | select(bases == ($x | bases)) ] | first) as $t
+                        | if ($t == null) or (($x | has("matcher")) | not)
+                             or (($t | has("matcher")) | not) then $x
+                          else
+                            (($x.matcher | split("|")) | map(select(length > 0))) as $a
+                            | (($t.matcher | split("|")) | map(select(length > 0))) as $b
+                            | $x + {matcher: (($a + ($b - $a)) | join("|"))}
+                          end))
+                      + ($e.value | map(select(bases | inside($have) | not))))
                 ))' \
          "$tgt" "$src" > "$tgt.tmp" && mv "$tgt.tmp" "$tgt"; then
       after=$(jq '[.hooks // {} | .[][]] | length' "$tgt")
@@ -337,6 +357,14 @@ sync_autonomy() {
         echo "    ✓ settings.json merged — $(( after - before )) autonomy hook entr$( (( after - before == 1 )) && echo y || echo ies) added (existing hooks preserved)"
       else
         echo "    ✓ settings.json up to date (existing keys preserved)"
+      fi
+      # Surface the effective matcher — silent drift here is exactly what let a
+      # widened guard sit unnoticed in an already-synced project.
+      rematched=$(jq -r '[ .hooks.PreToolUse[]?
+           | select([ .hooks[]?.command // empty | split("/") | last ] | index("usage-guard.sh"))
+           | .matcher // "(all tools)" ] | first // empty' "$tgt" 2>/dev/null || true)
+      if [[ -n "$rematched" ]]; then
+        echo "    ↳ usage-guard watches: $rematched"
       fi
     else
       rm -f "$tgt.tmp"

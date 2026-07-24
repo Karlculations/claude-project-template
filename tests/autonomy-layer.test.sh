@@ -142,6 +142,36 @@ assert_contains "$TMP/nojq.out" "jq not found" "--status names the missing depen
 PATH="$TMP/emptybin" "$BASH_BIN" "$HOOKS/usage-guard.sh" --json > "$TMP/nojq.json" 2>&1 || true
 assert_contains "$TMP/nojq.json" "error" "--json carries an error field"
 
+echo "Test 3k: Bash is guarded — a long edit/build/test run cannot burn past the limit"
+printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test"}}' \
+  | CLAUDE_USAGE_OVERRIDE=97 CLAUDE_USAGE_RESET_OVERRIDE="2099-01-01T00:00:00Z" \
+    bash "$HOOKS/usage-guard.sh" > "$TMP/ug-bash.json" 2>/dev/null || true
+assert_contains "$TMP/ug-bash.json" '"permissionDecision":"deny"' "ordinary Bash denied over threshold"
+
+echo "Test 3l: the autopilot handoff stays runnable at trip time"
+printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"mkdir -p ~/.cache/claude-autonomy && AUTOPILOT_CLAUDE_ARGS=%s nohup .claude/autopilot.sh \\"continue: x\\" >> ~/.cache/claude-autonomy/autopilot.log 2>&1 &"}}' "''" \
+  | CLAUDE_USAGE_OVERRIDE=97 CLAUDE_USAGE_RESET_OVERRIDE="2099-01-01T00:00:00Z" \
+    bash "$HOOKS/usage-guard.sh" > "$TMP/ug-auto.json" 2>/dev/null || true
+[[ ! -s "$TMP/ug-auto.json" ]] || fail "guard denied its own handoff command: $(cat "$TMP/ug-auto.json")"
+ok "autopilot.sh command is allow-listed (guard would otherwise deny its own escape hatch)"
+assert_contains "$TMP/ug-bash.json" "allow-listed" "deny reason tells Claude the handoff will still run"
+
+echo "Test 3m: PreToolUse matcher covers the tools that actually burn the window"
+MATCHER=$(jq -r '.hooks.PreToolUse[] | select([.hooks[].command | test("usage-guard")] | any) | .matcher' \
+  "$TEMPLATE_DIR/.claude/settings.json")
+for t in Bash Workflow Task Agent WebFetch WebSearch; do
+  [[ "$MATCHER" == *"$t"* ]] || fail "PreToolUse matcher missing '$t' — got: $MATCHER"
+done
+ok "matcher covers Bash|Workflow|Task|Agent|WebFetch|WebSearch"
+
+echo "Test 3n: a failed fetch backs off (guard runs per Bash call — no 6s stall each time)"
+rc=0
+printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}' \
+  | env -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$TMP/nocreds" CLAUDE_USAGE_STATE="$TMP/absent.json" \
+    bash "$HOOKS/usage-guard.sh" >/dev/null 2>&1 || rc=$?
+[[ "$rc" == "0" ]] || fail "no usable usage data should fail open, rc=$rc"
+assert_file "$TMP/absent.json.fetchfail" "failed fetch recorded so the next call skips the API"
+
 # ─── 4. Context guard ─────────────────────────────────────────────────────────
 
 TRANSCRIPT="$TMP/transcript.jsonl"
@@ -372,6 +402,31 @@ assert_contains "$P5/.claude/settings.json" "session-start-brief.sh" "new hook w
 [[ "$(grep -c "usage-guard.sh" "$P5/.claude/settings.json")" == "2" ]] \
   || fail "usage-guard entries duplicated on upgrade"
 ok "existing entries not duplicated"
+
+echo "Test 7c2b: a stale guard matcher is UNIONED with the template's (fix reaches synced projects, project's own alternatives survive)"
+P6=$(make_proj proj6)
+mkdir -p "$P6/.claude"
+# settings.json as an OLDER template version wrote it (guard blind to Bash/Workflow),
+# plus an alternative the project added itself, plus a hook of its own.
+jq '(.hooks.PreToolUse[] | select([.hooks[].command | test("usage-guard")] | any) | .matcher)
+      = "Task|WebFetch|WebSearch|mcp__.*|NotebookEdit"
+    | .hooks.PreToolUse += [{"matcher":"Edit","hooks":[{"type":"command","command":"./mine.sh"}]}]' \
+  "$TEMPLATE_DIR/.claude/settings.json" > "$P6/.claude/settings.json"
+( cd "$P6" && bash "$INIT" --sync ) > "$TMP/sync6.out" 2>&1 || { cat "$TMP/sync6.out"; fail "--sync (matcher union) exited non-zero"; }
+GUARD_M=$(jq -r '.hooks.PreToolUse[] | select([.hooks[].command | test("usage-guard")] | any) | .matcher' "$P6/.claude/settings.json")
+[[ "$GUARD_M" == *Bash* && "$GUARD_M" == *Workflow* ]] \
+  || fail "stale guard matcher not widened on --sync — got: $GUARD_M"
+ok "template alternatives added (widened guard reaches already-synced projects)"
+[[ "$GUARD_M" == *NotebookEdit* ]] || fail "project's own matcher alternative was dropped — got: $GUARD_M"
+ok "project's own alternative survives the merge (union, not overwrite)"
+[[ "$(grep -o 'Task' <<<"$GUARD_M" | wc -l)" == "1" ]] || fail "union duplicated an alternative — got: $GUARD_M"
+ok "shared alternatives are not duplicated"
+[[ "$(jq -r '.hooks.PreToolUse[] | select([.hooks[].command | test("mine.sh")] | any) | .matcher' "$P6/.claude/settings.json")" == "Edit" ]] \
+  || fail "project's own hook matcher was rewritten"
+ok "project's own hook entry left alone"
+[[ "$(grep -c "usage-guard.sh" "$P6/.claude/settings.json")" == "2" ]] || fail "guard entry duplicated during matcher refresh"
+ok "refresh updates in place, does not duplicate"
+assert_contains "$TMP/sync6.out" "usage-guard watches:" "sync reports the effective matcher"
 
 echo "Test 7c3: re-running --sync is idempotent"
 cp "$P5/.claude/settings.json" "$TMP/before-resync.json"
