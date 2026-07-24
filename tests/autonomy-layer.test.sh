@@ -286,6 +286,30 @@ printf '{"session_id":"t4g","transcript_path":"%s","stop_hook_active":false}' "$
     bash "$HOOKS/context-guard.sh" > "$TMP/cg8.json"
 assert_contains "$TMP/cg8.json" '"decision":"block"' "explicit window overrides the cached size"
 
+echo "Test 4i: context state is PER-SESSION (a concurrent session must not mask this one)"
+# Usage is account-wide so one shared file is right there; context is not.
+# Sharing one file = last-writer-wins: a session at 91% reads another's 12%.
+XR="$TMP/xdg"; mkdir -p "$XR"
+printf '{"session_id":"SESSION-A","model":{"display_name":"O"},"context_window":{"used_percentage":91,"context_window_size":200000}}' \
+  | XDG_RUNTIME_DIR="$XR" bash "$HOOKS/statusline.sh" >/dev/null
+printf '{"session_id":"SESSION-B","model":{"display_name":"O"},"context_window":{"used_percentage":12,"context_window_size":1000000}}' \
+  | XDG_RUNTIME_DIR="$XR" bash "$HOOKS/statusline.sh" >/dev/null
+assert_file "$XR/claude-autonomy/context-state-SESSION-A.json" "session A got its own context cache"
+assert_file "$XR/claude-autonomy/context-state-SESSION-B.json" "session B got its own context cache"
+printf '{"session_id":"SESSION-A","transcript_path":"%s","stop_hook_active":false}' "$BIG" \
+  | TMPDIR="$TMP" XDG_RUNTIME_DIR="$XR" bash "$HOOKS/context-guard.sh" > "$TMP/cg-a.json"
+assert_contains "$TMP/cg-a.json" '"decision":"block"' "session A blocks on its own 91%"
+printf '{"session_id":"SESSION-B","transcript_path":"%s","stop_hook_active":false}' "$BIG" \
+  | TMPDIR="$TMP" XDG_RUNTIME_DIR="$XR" bash "$HOOKS/context-guard.sh" > "$TMP/cg-b.json"
+[[ ! -s "$TMP/cg-b.json" ]] || fail "session B blocked — it read session A's reading"
+ok "session B unaffected by session A's 91% (no cross-session masking)"
+
+echo "Test 4j: a traversal-shaped session_id cannot escape its state/marker paths"
+printf '{"session_id":"../../../../%s/escaped","transcript_path":"%s","stop_hook_active":false}' "$TMP" "$BIG" \
+  | TMPDIR="$TMP/xdg" XDG_RUNTIME_DIR="$XR" CLAUDE_CONTEXT_OVERRIDE=99 bash "$HOOKS/context-guard.sh" >/dev/null 2>&1 || true
+[[ ! -e "$TMP/escaped" ]] || fail "session_id traversed out of its directory"
+ok "session_id is constrained to a safe filename"
+
 echo "Test 4d: under threshold stays silent"
 printf '{"session_id":"t4-low","transcript_path":"%s","stop_hook_active":false}' "$TRANSCRIPT" \
   | TMPDIR="$TMP" CLAUDE_CONTEXT_STATE="$TMP/no-ctx.json" bash "$HOOKS/context-guard.sh" > "$TMP/cg4.json"

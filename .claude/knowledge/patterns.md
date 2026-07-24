@@ -21,7 +21,9 @@ The statusline script is the only official receiver of harness telemetry — it 
 
 Two sensors, two caches (2026-07-24):
 - `rate_limits.*` → `usage-state.json` → `usage-guard.sh`
-- `context_window.{used_percentage,context_window_size}` → `context-state.json` → `context-guard.sh`
+- `context_window.{used_percentage,context_window_size}` → `context-state-<session_id>.json` → `context-guard.sh`
+
+**Cache scope must match the metric's scope.** Usage is account-wide → one shared file is correct. Context belongs to a single session → the cache must be keyed by `session_id`, or two concurrent sessions clobber each other and the guard reads someone else's number. Copying the usage cache's shape for context was wrong for exactly this reason.
 
 **Why**:
 No polling, no credentials in the interactive path, one place to normalize two data shapes. Separate files because an API-key user has no `rate_limits` but still has a context window, and `usage-guard.sh` rewrites the usage file from its own API fallback (a shared file would clobber the context reading).

@@ -11,7 +11,12 @@ input=$(cat)
 # Private, user-owned location (matches usage-guard.sh) — never bare /tmp.
 STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/claude-autonomy"
 STATE="${CLAUDE_USAGE_STATE:-$STATE_DIR/usage-state.json}"
-CTX_STATE="${CLAUDE_CONTEXT_STATE:-$STATE_DIR/context-state.json}"
+# Context is PER-SESSION (usage is account-wide, hence one shared usage file).
+# Two concurrent sessions sharing one context file means last-writer-wins: a
+# session at 91% reads another's 12% and never fires its guard.
+SID=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null || true)
+[[ "$SID" =~ ^[A-Za-z0-9._-]+$ ]] || SID="unknown"   # it lands in a path
+CTX_STATE="${CLAUDE_CONTEXT_STATE:-$STATE_DIR/context-state-$SID.json}"
 
 # Context window: Claude Code hands the statusline the OFFICIAL numbers
 # (context_window.used_percentage + .context_window_size). context-guard.sh
@@ -25,6 +30,10 @@ ctx=$(jq -c '{ts: (now|floor),
   size: (.context_window.context_window_size // null)}' <<<"$input" 2>/dev/null || true)
 if [[ -n "$ctx" && $(jq -r '.pct // "null"' <<<"$ctx") != "null" ]]; then
   mkdir -p "$(dirname "$CTX_STATE")" 2>/dev/null || true
+  # Prune only when starting a new session's file — once per session, not on
+  # every render. Files are tiny but sessions are many.
+  [[ -f "$CTX_STATE" ]] || find "$(dirname "$CTX_STATE")" -maxdepth 1 \
+    -name 'context-state-*.json' -mtime +1 -delete 2>/dev/null || true
   printf '%s' "$ctx" > "$CTX_STATE.tmp.$$" && mv "$CTX_STATE.tmp.$$" "$CTX_STATE"
 fi
 

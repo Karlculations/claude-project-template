@@ -26,11 +26,16 @@ THRESH="${CLAUDE_CONTEXT_THRESHOLD:-80}"
 WINDOW="${CLAUDE_CONTEXT_WINDOW:-200000}"
 [[ "$THRESH" =~ ^[0-9]+$ ]] || THRESH=80
 [[ "$WINDOW" =~ ^[1-9][0-9]*$ ]] || WINDOW=200000
-CTX_STATE="${CLAUDE_CONTEXT_STATE:-${XDG_RUNTIME_DIR:-$HOME/.cache}/claude-autonomy/context-state.json}"
+SID=$(jq -r '.session_id // empty' <<<"$INPUT" 2>/dev/null || true)
+# SID lands in two paths below — never let it carry separators or traversal.
+[[ "$SID" =~ ^[A-Za-z0-9._-]+$ ]] || SID="unknown"
+# Per-session, matching statusline.sh: context usage belongs to ONE session,
+# unlike the account-wide usage window. A shared file would let a concurrent
+# session's reading mask this one's.
+CTX_STATE="${CLAUDE_CONTEXT_STATE:-${XDG_RUNTIME_DIR:-$HOME/.cache}/claude-autonomy/context-state-$SID.json}"
 CTX_TTL="${CLAUDE_CONTEXT_STATE_TTL:-600}"
 [[ "$CTX_TTL" =~ ^[0-9]+$ ]] || CTX_TTL=600
 PCT=""
-SID=$(jq -r '.session_id // "unknown"' <<<"$INPUT" 2>/dev/null || echo unknown)
 MARKER="${TMPDIR:-/tmp}/claude-ctxguard-${SID}"
 [[ -f "$MARKER" ]] && exit 0       # nag once per session, not on every stop
 
