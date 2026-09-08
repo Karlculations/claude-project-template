@@ -92,7 +92,7 @@ A guard is only as good as the events it is *invoked on* — "the hook is correc
 A docs-research subagent confidently reported project `.claude/settings.json` takes `enabledPlugins` as an ARRAY of `"name@marketplace"` strings; the whole feature shipped on that claim. Real-world test: Claude Code's validator rejects it ("Expected record, but received array") and then **skips the entire settings file** — silently disabling the autonomy hooks and statusline in that project too.
 
 **What actually worked**:
-`enabledPlugins` is a record (`{"x@y": true}`) at every settings level. Fix shipped in `sync_stack()` incl. array→record migration for files the pre-fix version wrote (an invalid file is already fully broken, so migration is repair, not user-data rewriting — and record merge with existing-keys-first preserves explicit `false` disables).
+`enabledPlugins` is a record (`{"x@y": true}`) at every settings level. Fix shipped in `sync_stack()` (that whole stack-catalog feature was removed 2026-09-08 as over-engineering — the lesson below is what survives) incl. array→record migration for files the pre-fix version wrote (an invalid file is already fully broken, so migration is repair, not user-data rewriting — and record merge with existing-keys-first preserves explicit `false` disables).
 
 **Pattern to avoid**:
 A schema claim from docs research is a hypothesis, not a fact — validate generated config against the real consumer (open the app / run its validator) before shipping a writer for it. Also note the blast radius: one invalid key can void a whole config file, so a config-writer bug can break unrelated features.

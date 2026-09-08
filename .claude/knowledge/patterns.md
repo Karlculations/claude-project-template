@@ -69,19 +69,17 @@ Claim the blind spot is closed. The window during the run is irreducible with ho
 
 ### Distribution Ownership Rule
 
-**Established**: 2026-06-26 (extended 2026-07-21, 2026-07-22)
+**Established**: 2026-06-26 (extended 2026-07-21)
 **Applies to**: `init-claude-project.sh` full init and `--sync`
 
 **The Pattern**:
-- **Template-owned** → overwritten on sync: agent bodies (installed set only), commands (all), hooks, autopilot, vendored skill bodies under `.claude/skills/` (refreshed to match `templates/skills/` on sync, never added — a project only gets a skill it already selected).
-- **User-owned** → merged, additive-only, or never touched: `settings.json` (statusLine added only when missing; hook entries appended per-event ONLY when no existing entry references the same script basename; for an entry that DOES reference the same template script, its `matcher` is unioned with the template's — a matcher is a regex alternation, so this is set-union over the `|` alternatives, additive by construction: the template can widen what a guard watches but never narrow it, and a project's own alternatives always survive (2026-07-24; without it a widened guard never reached an already-synced project while `--sync` reported "up to date"); `enabledPlugins`/`extraKnownMarketplaces` appended-only from the stack picker — none of these ever remove an existing entry, and every merge is idempotent), `.mcp.json` (`mcpServers` appended-only — an existing server id always wins over the catalog's), changelogs (append `[Unreleased]` only), knowledge base (never touched by sync), custom CLAUDE.md content outside anchors.
-- Shipped file stubs live in `templates/` (e.g. `templates/knowledge/`, `templates/catalog.json`, `templates/skills/`), never doubling as this repo's own live files.
-- Plugins and MCP servers referenced in the stack catalog are never vendored (installs are native to Claude Code, triggered by the config the picker writes) — only skill bodies are copied into the repo.
-- Credentials are redacted at the source: `capture_stack()` rewrites MCP `env`/`headers` values to `${SERVERID_KEY}` placeholders before they ever reach `templates/catalog.json` — a literal credential must never be committed.
+- **Template-owned** → overwritten on sync: agent bodies (installed set only), commands (all), hooks, autopilot.
+- **User-owned** → merged, additive-only, or never touched: `settings.json` (statusLine added only when missing; hook entries appended per-event ONLY when no existing entry references the same script basename; for an entry that DOES reference the same template script, its `matcher` is unioned with the template's — a matcher is a regex alternation, so this is set-union over the `|` alternatives, additive by construction: the template can widen what a guard watches but never narrow it, and a project's own alternatives always survive (2026-07-24; without it a widened guard never reached an already-synced project while `--sync` reported "up to date") — never removes an existing entry, and every merge is idempotent), changelogs (append `[Unreleased]` only), knowledge base (never touched by sync), custom CLAUDE.md content outside anchors.
+- Shipped file stubs live in `templates/` (e.g. `templates/knowledge/`), never doubling as this repo's own live files.
 - Policy change 2026-07-21: the old "existing `hooks` key is sacred, warn and skip" rule silently orphaned new template hooks in previously-synced projects (script copied, never wired). Additive entry-level merge fixed that; the sanctioned opt-out for a guard is `CLAUDE_AUTONOMY=off`, since deleting its entry means the next `--sync` re-adds it.
 
 **Do NOT**:
-modify or remove existing entries in a user's `hooks` key (append-only, keyed by script basename), an existing `enabledPlugins`/`extraKnownMarketplaces`/`mcpServers` entry, or hardcode single-file copies in full init when a `sync_*` function exists. Never write a literal credential value into `templates/catalog.json` — redact at capture, not later.
+modify or remove existing entries in a user's `hooks` key (append-only, keyed by script basename), or hardcode single-file copies in full init when a `sync_*` function exists.
 
 ---
 
